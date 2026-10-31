@@ -12,8 +12,8 @@
    },
    {
     "path": "background.js",
-    "sha256": "4dffe95ed25a9be54095023ad02c2b9535d88063ac0567394410e26684692ede",
-    "size": 204808
+    "sha256": "58cb5edb1c3330bbbbadf7c302883610b33bd12732cb195016b82ee308fe8089",
+    "size": 205596
    },
    {
     "path": "config.js",
@@ -27,8 +27,8 @@
    },
    {
     "path": "sidepanel.js",
-    "sha256": "99c2887969b7013812ad9ed587372b868a8d843455711fd3662c88ec3958c7bb",
-    "size": 31268
+    "sha256": "e7f2e847542e70822d3a70a8c123e66d8b8d8cf60df81b25ef7eb9907c31d75c",
+    "size": 31322
    },
    {
     "path": "xlsx.full.min.js",

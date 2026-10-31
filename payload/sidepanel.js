@@ -452,12 +452,12 @@ function renderState(s) {
         updCard.hidden = !u;
         if (u) {
             updText.innerText = u.ready
-                ? ('새 버전 ' + u.latest + ' 이 준비됐어요.'
+                ? ('새 버전 ' + u.latest + ' 을 다 받았어요.'
                    + (u.note ? '\n' + u.note : '')
-                   + '\n작업이 끝나면 저절로 바뀝니다.')
+                   + '\n크롬을 다시 켜면 바뀝니다. 지금 바꾸려면 아래를 누르세요.')
                 : ('새 버전 ' + u.latest + ' 이 나왔어요. 받는 중입니다.'
                    + (u.note ? '\n' + u.note : '')
-                   + '\n받고 나면 저절로 바뀝니다 — 그냥 쓰셔도 됩니다.');
+                   + '\n받고 나면 크롬을 다시 켤 때 바뀝니다 — 그냥 쓰셔도 됩니다.');
             if (updBtn) updBtn.hidden = !u.ready;
             // 자동 업데이트가 등록 안 된 PC 를 위한 대비 — 주소가 있을 때만 보여준다
             const link = $('upd-link'), a = $('upd-a');

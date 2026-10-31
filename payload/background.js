@@ -86,6 +86,7 @@ const S = {
     catStat: {},      // [카테고리 성적] 경로별 {seen,bundle,ok,solo} — 판이 바뀌어도 쌓인다
     update: null,     // [업데이트] { latest, ready, note } — 새 버전이 있을 때만 채워진다
     updCheckedAt: 0,  // 마지막으로 새 버전을 확인한 시각 (저장 안 함)
+    lastStateAt: 0,   // 패널이 마지막으로 상태를 물어본 시각 = 패널이 열려 있나 (저장 안 함)
     sessionStartMs: 0 // 지금 켜져 있는 작업 구간의 시작 시각 (저장 안 함)
 };
 
@@ -241,8 +242,15 @@ function publicState() {
 //  ★새로고침하면 모아둔 결과가 날아갑니다. 그래서 **쉬는 중 + 모은 게 없을 때만** 합니다.
 //    돌리는 중이거나 결과가 있으면 패널에 "준비됨" 만 띄우고 기다립니다.
 // ------------------------------------------------------------
+// 지금 저절로 갈아타도 되는 상태인가.
+//  ① 돌리는 중이거나 모아둔 결과가 있으면 안 된다 (새로고침하면 날아간다)
+//  ② 패널이 열려 있으면 안 된다 — 보고 있는 화면이 갑자기 닫혀 놀라게 된다.
+//     이때는 ⬆️ 칸의 [지금 적용] 을 누르게 한다.
+//  ※ 어차피 크롬을 다시 켜면 폴더에 있는 새 버전으로 뜬다. 그게 가장 흔한 경로다.
 function updateIdle() {
-    return !S.running && (S.results || []).length === 0 && (S.queue || []).length === 0;
+    const panelOpen = S.lastStateAt && Date.now() - S.lastStateAt < 15000;
+    return !S.running && !panelOpen
+        && (S.results || []).length === 0 && (S.queue || []).length === 0;
 }
 
 // 새로고침해도 버전이 안 바뀌는 상황(업데이트기가 쪽지는 남겼는데 파일 교체가 덜 된 등)에서
@@ -538,6 +546,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'v2:getState') {
+        S.lastStateAt = Date.now();            // 패널이 열려 있다는 표시 (업데이트 판단에 쓴다)
         maybeCheckUpdate();                    // 가끔 새 버전이 나왔는지 본다 (기다리지 않는다)
         sendResponse({ ok: true, state: publicState() });
         return true;
