@@ -1,0 +1,55 @@
+{
+ "latest": "4.95",
+ "note": "최근 2주 리뷰 수 + 자동 업데이트",
+ "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
+ "patch": {
+  "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
+  "files": [
+   {
+    "path": "manifest.json",
+    "sha256": "8cbeb0a731bc3a426816758c6e3192795d8b3da581517458d1abdbb979334686",
+    "size": 1140
+   },
+   {
+    "path": "background.js",
+    "sha256": "4dffe95ed25a9be54095023ad02c2b9535d88063ac0567394410e26684692ede",
+    "size": 204808
+   },
+   {
+    "path": "config.js",
+    "sha256": "a9eceb614f11cdf7cd6c0276f59ad01c446fa24309c7b699c690bdcdf0fca16d",
+    "size": 6941
+   },
+   {
+    "path": "sidepanel.html",
+    "sha256": "e8882ee24cae68678839e1b9f724c526e849adef1f848389bcb2a433f7ef9203",
+    "size": 19324
+   },
+   {
+    "path": "sidepanel.js",
+    "sha256": "99c2887969b7013812ad9ed587372b868a8d843455711fd3662c88ec3958c7bb",
+    "size": 31268
+   },
+   {
+    "path": "xlsx.full.min.js",
+    "sha256": "1c7abf2993ff2cd61e508f9268e9acda0098c9796f3925d2ba0d2579072653e2",
+    "size": 425020
+   },
+   {
+    "path": "icon16.png",
+    "sha256": "72eb50bafa0817c701e496973e057691356474f7a8b6dfe9553482c8a62e80a6",
+    "size": 668
+   },
+   {
+    "path": "icon48.png",
+    "sha256": "ce4689257c9b858e38101ae8ec538f639f11671c215d97223f52553700157017",
+    "size": 1985
+   },
+   {
+    "path": "icon128.png",
+    "sha256": "8cfcb459156ef4f87db73183513eb106234f6d348b61d7456940f0756e811af4",
+    "size": 5279
+   }
+  ]
+ }
+}

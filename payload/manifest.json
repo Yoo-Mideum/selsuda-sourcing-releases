@@ -1,0 +1,45 @@
+﻿{
+  "manifest_version": 3,
+  "name": "셀수다 자동 소싱 프로그램",
+  "version": "4.95",
+  "description": "키워드를 넣으면 카탈로그 수량 옵션을 모아 묶음 사입 마진을 계산합니다. 사이드 패널에서 실시간으로 진행 상황을 보고 키워드를 추가할 수 있습니다.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage",
+    "tabs",
+    "cookies",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://search.shopping.naver.com/*",
+    "https://msearch.shopping.naver.com/*",
+    "https://shopping.naver.com/*",
+    "https://*.naver.com/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*",
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "셀수다 자동 소싱 프로그램",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
+
+
