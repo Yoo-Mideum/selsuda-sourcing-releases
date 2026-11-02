@@ -321,8 +321,14 @@
       </label>
       <label style="display:flex; align-items:flex-start; gap:7px; margin-top:9px; font-size:12px; font-weight:700; color:var(--ink-soft); cursor:pointer;">
         <input id="set-solocsv" type="checkbox" style="width:15px; height:15px; margin-top:1px;">
-        <span>🆕 낱개 신규도 자동등록에 담기<br>
-          <span style="font-weight:600; color:var(--ink-faint);">묶음만 팔던 상품에 "1개"를 새로 만들어 올립니다. 참고할 최저가가 없는 가격이라, 꺼두면 엑셀로만 보여줍니다.</span>
+        <span>🆕 빈 수량 칸도 등록대기(csv)에 담기<br>
+          <span style="font-weight:600; color:var(--ink-faint);">아무도 안 걸어 둔 수량 칸은 참고할 최저가가 없는 가격입니다. 작업지시서(json)에는 항상 들어가고, 이 상자는 예전 csv 에도 넣을지만 정합니다.</span>
+        </span>
+      </label>
+      <label style="display:flex; align-items:flex-start; gap:7px; margin-top:9px; font-size:12px; font-weight:700; color:var(--ink-soft); cursor:pointer;">
+        <input id="set-forward" type="checkbox" checked style="width:15px; height:15px; margin-top:1px;">
+        <span>🛍️ 낱개 사입(순방향)도 계산<br>
+          <span style="font-weight:600; color:var(--ink-faint);">네이버 1개 최저가 판매처에서 「최대할인가 − 적립(구매·멤버십·현대카드)」로 1개를 사서 2~12개 칸에 파는 길입니다. 켜면 낱개 전용 카탈로그도 열어 보므로 시간이 더 걸립니다. 계산 결과는 엑셀(판정 「낱개사입·…」)과 작업지시서에 들어갑니다.</span>
         </span>
       </label>
     </div>
@@ -367,8 +373,16 @@
             <label class="field-label" for="set-autolimit">꼬리물기 상한(개)</label>
             <input id="set-autolimit" type="number" value="10" min="0" step="5">
           </div>
+          <div>
+            <label class="field-label" for="set-slotrate">칸별 마진 비율(%)</label>
+            <input id="set-slotrate" type="number" value="15" min="1" max="100" step="1">
+          </div>
+          <div>
+            <label class="field-label" for="set-reviewmin">2주 리뷰 기준(개)</label>
+            <select id="set-reviewmin"></select>
+          </div>
         </div>
-        <div class="hint">순이익 = 판매가 − 수수료 − 개당원가 − 택배비. 목표 순이익 이상 남아야 「등록가능」으로 표시돼요.<br>매입배송비 = 묶음을 사 올 때 내가 내는 배송비(묶음 1건 기준). 개당원가에 더해집니다. 0이면 예전과 같은 숫자가 나와요.<br>꼬리물기 상한 = 등록가능 상품에서 자동으로 뽑은 키워드(자동추가)를 한 번의 실행에 몇 개까지 검색할지. 0이면 꼬리물기를 꺼요. 넘친 키워드는 엑셀 「다음 사냥감」 시트에 모여요. 대략 상한 10 = 카탈로그 300여 개 = 몇 시간 분량이니 처음엔 작게 잡는 걸 추천해요.</div>
+        <div class="hint">순이익 = 판매가 − 수수료 − 개당원가 − 택배비. 목표 순이익 이상 남아야 「등록가능」으로 표시돼요.<br>칸별 마진 비율 = 2개·3개… 수량 칸마다 목표 순이익을 「개당원가 × 수량 × 비율」로 잡아요. 다만 최소 1,000원, 최대 10,000원이에요. 남이 있는 칸은 그 값보다 10원 싸게 가고, 그래도 1,000원이 안 남으면 그 칸은 빼요.<br>2주 리뷰 기준 = 최근 2주 리뷰가 이보다 적은 카탈로그는 건너뛰어요. 한 달로 보면 이미 식은 상품도 통과해서 2주로 봐요. 등록은 AI 비용이 드니 팔리는 것만 넘기려는 거예요. 10이면 "그래도 팔린다", 100이면 "잘 팔린다", 1000이면 아주 큰 상품이에요.<br>매입배송비 = 묶음을 사 올 때 내가 내는 배송비(묶음 1건 기준). 개당원가에 더해집니다. 0이면 예전과 같은 숫자가 나와요.<br>꼬리물기 상한 = 등록가능 상품에서 자동으로 뽑은 키워드(자동추가)를 한 번의 실행에 몇 개까지 검색할지. 0이면 꼬리물기를 꺼요. 넘친 키워드는 엑셀 「다음 사냥감」 시트에 모여요. 대략 상한 10 = 카탈로그 300여 개 = 몇 시간 분량이니 처음엔 작게 잡는 걸 추천해요.</div>
       </details>
     </div>
 

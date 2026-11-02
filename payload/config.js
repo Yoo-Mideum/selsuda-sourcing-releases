@@ -98,7 +98,8 @@ function appVer() {
 //  확장프로그램 폴더에 덮어씁니다. 받는 양은 보통 수백 KB 입니다.
 //
 //  확장은 파일을 스스로 못 씁니다(크롬이 막습니다). 그래서 역할을 나눕니다.
-//    업데이트기 : 파일을 교체하고, 끝나면 `_디스크버전.json` 을 남긴다
+//    업데이트기 : 파일을 교체하고, 끝나면 `디스크버전.json` 을 남긴다
+//    ★파일 이름 앞에 _ 를 붙이면 안 된다 — 크롬이 "_ 로 시작하는 이름은 시스템 예약" 이라며 확장을 아예 못 올린다 (2026-11-01 실측)
 //    확장       : 그 파일을 보고 "폴더가 새 버전이 됐다"는 걸 알면 스스로 새로고침
 //
 //  그래서 수강생은 아무것도 누르지 않습니다.
@@ -136,7 +137,7 @@ async function fetchLatestVersion() {
 //  ★이 파일은 설치 때는 없고 업데이트기가 '새로' 만든다. 그래서 캐시에 걸리지 않는다.
 async function fetchDiskVersion() {
     try {
-        const url = chrome.runtime.getURL('_디스크버전.json');
+        const url = chrome.runtime.getURL('디스크버전.json');
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) return null;
         const j = await res.json();

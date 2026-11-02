@@ -14,6 +14,27 @@ importScripts('xlsx.full.min.js');   // 엑셀(.xlsx) 파일 생성 라이브러
 
 const searchUrlBase = 'https://search.shopping.naver.com/search/all?query=';
 const NAVER_LOGIN_URL = 'https://nid.naver.com/nidlogin.login';
+
+// 로그인 창을 "한 번만" 연다. 이미 열어 둔 창이 살아 있으면 다시 열지 않고(앞으로 끌어오지도 않는다) 그대로 둔다.
+//  ★실측(2026-11-02): 로그인이 풀린 채로 3초마다 다시 돌면서 창을 계속 새로 열어 탭이 수십 개가 됐다.
+let _loginTabId = null;
+async function openNaverLoginOnce() {
+    try {
+        if (_loginTabId) {
+            const t = await chrome.tabs.get(_loginTabId);
+            if (t && /nid\.naver\.com/.test(String(t.url || ''))) return false;   // 이미 열려 있다
+        }
+    } catch (_) { _loginTabId = null; }
+    try {
+        const t = await chrome.tabs.create({ url: NAVER_LOGIN_URL, active: true });
+        _loginTabId = t && t.id;
+        return true;
+    } catch (_) { return false; }
+}
+
+// 로그인·회원 확인에서 멈췄을 때는 5분에 한 번만 다시 해 본다 (그 사이 사용자가 로그인하면 다음 시도에 바로 이어간다)
+const HALT_RETRY_MS = 5 * 60 * 1000;
+let _haltAt = 0;
 const BOM = String.fromCharCode(0xFEFF);
 
 const CONFIG = {
@@ -37,9 +58,15 @@ const CONFIG = {
     SAVE_FAIL_REPORT: true,       // 못 읽은 카탈로그의 진단 파일을 같이 저장할지
 
     // --- 리뷰 필터 (실제로 잘 팔리는 카탈로그만) ---
-    REVIEW_FILTER: true,          // 켜면: 최근 N일 리뷰가 기준 미만인 카탈로그는 건너뜀
-    REVIEW_DAYS: 14,              // 최근 며칠 (2주)
-    REVIEW_MIN_COUNT: 10,        // 그 기간에 달린 리뷰가 이 개수 미만이면 건너뜀
+    //  등록은 AI 토큰이 들지만 소싱은 안 든다. 그래서 "팔리는 것"만 등록 쪽으로 넘기도록
+    //  리뷰 수로 거른다. 기준은 2주(14일) 리뷰 수. 패널의 구간(10·30·50…)에서 고른다.
+    //  한 달로 보면 이미 트렌드에서 밀린 상품도 통과하므로 2주로 본다 (루크 지시 2026-11-01).
+    REVIEW_FILTER: true,          // 켜면: 2주 리뷰가 기준 미만인 카탈로그는 건너뜀
+    REVIEW_DAYS: 14,              // 최근 며칠 = 2주
+    REVIEW_MIN_COUNT: 10,         // 2주 리뷰가 이 개수 미만이면 건너뜀 (패널에서 바꾼다)
+    //  패널에서 고를 수 있는 구간. 100 미만은 10·30·50·70, 500 까지 50 단위, 그 위는 100 단위.
+    REVIEW_TIERS: [10, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+                   600, 700, 800, 900, 1000],
     // 리뷰를 '몇 페이지까지' 세는지. 기준(10개)에 닿아도 멈추지 않고 끝까지 센다
     //  — 판매량을 가늠하려면 "10개 넘음" 이 아니라 실제 개수가 필요하기 때문이다.
     //  한 페이지 20개. 상한에 닿으면 그 숫자에 '+' 를 붙여 "더 있다"를 알린다.
@@ -52,6 +79,36 @@ const CONFIG = {
     SOLO_NEW: true,               // 끄면 예전처럼 '1개 옵션 없음'으로만 두고 넘어간다
     SOLO_NEW_MAX_RATIO: 2.0,      // 낱개 판매가 ÷ 개당원가. 이보다 크면 '확인필요'로 표시
     SOLO_NEW_HARD_RATIO: 3.0,     // 이보다 크면 담지 않는다 (낱개로 팔기엔 너무 비싸다)
+
+    // --- 빈 수량 신규 (옵션 사이에 비어 있는 수량 자리) ---
+    //  택배비는 몇 개를 팔든 한 건만 나간다. 그래서 개당 차익이 얇은 상품은
+    //  1개로는 영원히 목표순이익을 못 넘지만, 몇 개를 묶으면 넘긴다.
+    //      최소수량 n >= (택배비 + 목표순이익) / (개당시세 x (1-수수료율) - 개당원가)
+    //  비어 있는 자리면 깎을 상대가 없어 판매가를 우리가 정한다 (낱개신규와 같은 생각).
+    GAP_QTY: true,                // 끄면 예전처럼 1개·메인수량만 본다
+    GAP_QTY_MAX: 12,              // 이보다 많이 묶는 제안은 하지 않는다 (사 가는 사람이 없다)
+
+    // --- 수량 칸 전부 (그룹상품 등록용, v4.97) ---
+    //  네이버 그룹상품은 1개·2개·3개… 칸을 한 상품으로 묶어 올린다(등록 한도 1개로 산정).
+    //  그래서 "제일 작은 묶음 하나"가 아니라 1~12개 칸 전부를 계산해 작업지시서에 담는다.
+    //  칸마다 목표순이익 = 개당원가 x 수량 x 비율, 단 최소 1,000원 · 최대 10,000원 (루크 규칙).
+    //    남이 있는 칸  → 그 값보다 10원 싸게. 그래도 최소 순이익이 안 남으면 그 칸은 뺀다.
+    //    비어 있는 칸  → 목표순이익이 그대로 남는 값을 우리가 정한다.
+    //  칸마다 개당 값이 내려갈 필요는 없다(쿠팡도 그렇다). 다만 더 큰 묶음보다 비싸면 뺀다.
+    SLOT_MAX: 12,
+    SLOT_PROFIT_MIN: 1000,
+    SLOT_PROFIT_MAX: 10000,
+    SLOT_PROFIT_RATE: 15,         // % — 패널에서 바꾼다
+    WORKORDER_SPEC: '1.1',        // 1.1 = 매입.경로 '낱개'(순방향) 항목이 들어간다
+
+    // --- 낱개 사입(순방향) (v4.98) ---
+    //  네이버 1개 최저가 판매처(스마트스토어)에서 "최대할인가 − 적립(구매·멤버십·현대카드)" 로 1개를 사서
+    //  2~12개 칸에 판다. 표시 최저가와 실제 사는 값의 차이가 마진이다 (루크 설계 2026-11-01).
+    //  켜면 낱개 전용 카탈로그도 페이지를 연다(리뷰 기준은 똑같이 적용). 패널 상자로 끈다.
+    FORWARD_BUY: true,
+    //  공식몰 규칙(루크): 카탈로그 판매처에 공식몰이 있어야 하고, 그 값이 최저가이거나 최저가와 이 금액 미만 차이여야 한다.
+    //  (공식몰이 아니면 멤버십·브랜드 혜택이 안 붙고, 최저가보다 많이 비싸면 혜택을 빼도 남지 않는다)
+    FORWARD_OFFICIAL_GAP: 1000,        // 작업지시서 규격 번호. 칸 모양이 바뀌면 올린다 (자동등록이 본다)
 
     REQUIRE_NAVER_LOGIN: true,    // 네이버 로그인 안 되어 있으면 시작하지 않음
     CLOSE_WORKER_TAB: true
@@ -129,7 +186,9 @@ function bumpCatStat(cat) {
     const hasBundle = Number(cat.bestQty) > 0;
     const v = String(cat.verdict || '');
     const isOk = v.indexOf('등록가능') === 0;
-    const isSolo = v === '낱개신규';
+    // 새 수량 자리 = 낱개신규(1개) + 빈수량신규(옵션 사이의 빈 칸).
+    //  gapQty 는 목표순이익을 넘긴 경우에만 채워지므로 숫자만 보면 된다.
+    const isSolo = v === '낱개신규' || Number(cat.gapQty) > 0;
 
     for (let d = 1; d <= Math.min(CATSTAT_DEPTH, parts.length); d++) {
         const key = parts.slice(0, d).join(' > ');
@@ -169,7 +228,7 @@ function catStatList(minSeen) {
 // 엑셀 「카테고리 성적」 시트
 function catStatAoa() {
     const list = catStatList();
-    const aoa = [['카테고리', '방문', '묶음있음', '묶음비율(%)', '등록가능', '낱개신규', '건진수', '건진비율(%)']];
+    const aoa = [['카테고리', '방문', '묶음있음', '묶음비율(%)', '등록가능', '새수량자리', '건진수', '건진비율(%)']];
     for (const r of list) aoa.push([r.path, r.seen, r.bundle, r.bundleRate, r.ok, r.solo, r.hit, r.hitRate]);
     if (!list.length) {
         aoa.push(['아직 모인 게 없어요 — 같은 카테고리를 ' + CATSTAT_MIN_SEEN + '개 이상 봐야 나옵니다']);
@@ -184,12 +243,18 @@ function topFinds(n) {
         const v = String(r.verdict || '');
         const solo = v === '낱개신규';
         const ok = v.indexOf('등록가능') === 0;
-        if (!ok && !solo) continue;
+        // 빈 수량 자리가 더 많이 남으면 그쪽을 보여준다 (안 보여주면 있는 줄을 모른다)
+        const gapN = Number(r.gapQty) || 0;
+        const gapWins = gapN > 1
+            && Number(r.gapProfit) > Math.max(Number(solo ? r.soloProfit : r.profit) || -Infinity, -Infinity);
+        if (!ok && !solo && !gapWins) continue;
+        const useGap = gapWins;
         out.push({
-            title: String(solo ? soloTitleOf(r.title) : (r.title || '')).slice(0, 40),
-            price: solo ? r.soloPrice : r.basePrice,
-            profit: solo ? r.soloProfit : r.profit,
-            solo: solo,
+            title: String(useGap ? qtyTitleOf(r.title, gapN)
+                : (solo ? soloTitleOf(r.title) : (r.title || ''))).slice(0, 40),
+            price: useGap ? r.gapPrice : (solo ? r.soloPrice : r.basePrice),
+            profit: useGap ? r.gapProfit : (solo ? r.soloProfit : r.profit),
+            solo: solo || useGap,
             rv: r.reviewRecent === '' || r.reviewRecent === undefined ? ''
                 : (String(r.reviewRecent) + (r.reviewMore ? '+' : (r.reviewGuess ? '?' : '')))
         });
@@ -236,7 +301,7 @@ function publicState() {
 //
 //  역할 나눔은 config.js 의 설명을 보세요. 여기서는 두 가지만 합니다.
 //   ① 깃허브의 최신 버전 번호를 가끔 확인해 패널에 알린다
-//   ② 업데이트기가 남긴 `_디스크버전.json` 이 지금 돌고 있는 버전과 다르면
+//   ② 업데이트기가 남긴 `디스크버전.json` 이 지금 돌고 있는 버전과 다르면
 //      → 폴더는 새 버전인데 크롬이 옛 코드를 돌리고 있다는 뜻 → 새로고침
 //
 //  ★새로고침하면 모아둔 결과가 날아갑니다. 그래서 **쉬는 중 + 모은 게 없을 때만** 합니다.
@@ -403,7 +468,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 added++;
             }
             persist(); broadcast();
-            if (added > 0) ensureWorker();
+            if (added > 0) ensureWorker(true);
             sendResponse({ ok: true, added: added, rejected: rejected });
         })();
         return true;
@@ -434,7 +499,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             if (!S.nextTargets.length) { sendResponse({ ok: false, error: '남은 사냥감이 없어요.' }); return; }
             const moved = await boardNextTargets();
-            if (moved > 0) ensureWorker();
+            if (moved > 0) ensureWorker(true);
             sendResponse({ ok: true, moved: moved });
         })();
         return true;
@@ -493,7 +558,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'v2:start') {
-        ensureWorker();
+        S.haltedFor = '';      // 사람이 [시작]을 눌렀다 — 멈춤 상태를 풀고 바로 본다
+        ensureWorker(true);
         sendResponse({ ok: true });
         return true;
     }
@@ -548,6 +614,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'v2:getState') {
         S.lastStateAt = Date.now();            // 패널이 열려 있다는 표시 (업데이트 판단에 쓴다)
         maybeCheckUpdate();                    // 가끔 새 버전이 나왔는지 본다 (기다리지 않는다)
+        maybeRunFileOrder();                   // 실행지시 파일이 있으면 따른다 (기다리지 않는다)
         sendResponse({ ok: true, state: publicState() });
         return true;
     }
@@ -577,7 +644,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'openNaverLogin') {
-        chrome.tabs.create({ url: NAVER_LOGIN_URL, active: true });
+        openNaverLoginOnce();
         sendResponse({ ok: true });
         return true;
     }
@@ -619,7 +686,8 @@ const bestProfitOf = (r) => {
     const a = (r.profit === "" || r.profit === undefined) ? -Infinity : r.profit;
     const b = (r.mainProfit === "" || r.mainProfit === undefined) ? -Infinity : r.mainProfit;
     const c = (r.soloProfit === "" || r.soloProfit === undefined) ? -Infinity : r.soloProfit;
-    return Math.max(a, b, c);
+    const d = (r.gapProfit === "" || r.gapProfit === undefined) ? -Infinity : r.gapProfit;
+    return Math.max(a, b, c, d);
 };
 
 // 확장된 판매행의 순이익 (엑셀 정렬용 - 행 단위)
@@ -654,17 +722,43 @@ function expandSellRows(data, targetProfit) {
             sellCatalogUrl: oneUrl
         }));
 
-        if (r.mainQty && r.mainQty > 1
-            && r.mainProfit !== '' && r.mainProfit !== undefined
-            && r.mainProfit >= targetProfit) {
+        // [수량 칸 전부] 2개부터 12개까지, 남는 칸은 전부 한 줄씩. (v4.97)
+        //  남이 있는 칸(경쟁) = '등록가능', 비어 있는 칸 = '빈수량신규'.
+        //  예전의 "메인수량 행"과 "빈 수량 한 칸"은 이 안에 들어 있다.
+        //  칸이 이미 최소 순이익(1,000원)을 넘긴 것만 담겨 있어 여기서 다시 거르지 않는다.
+        //  그룹상품으로 한 번에 올리므로, 몇 줄이 되든 카탈로그 주소는 같다.
+        for (const s of (r.slots || [])) {
+            if (!(s.qty > 1)) continue;
+            const isMain = (s.basis === '경쟁' && Number(r.mainQty) === s.qty);
             out.push(Object.assign({}, r, {
-                sellQty: r.mainQty,
-                sellPrice: r.mainPrice,
-                sellProfit: r.mainProfit,
-                sellCostRate: r.unitCost > 0 ? Math.round((r.mainProfit / (r.unitCost * r.mainQty)) * 1000) / 10 : '',
-                sellVerdict: '등록가능',   // 몇 개 단위인지는 판매수량 칸으로 알 수 있어 괄호 표기는 뺀다 (2026-09-06)
-                sellTitle: r.title || '',            // 카드 제목이 곧 메인수량 제목
-                sellCatalogUrl: r.catalogUrl || ''   // 검색 1페이지에 노출된 카탈로그가 곧 메인 판매 페이지
+                sellQty: s.qty,
+                sellPrice: s.price,
+                sellProfit: s.profit,
+                sellCostRate: r.unitCost > 0 ? Math.round((s.profit / (r.unitCost * s.qty)) * 1000) / 10 : '',
+                sellVerdict: s.basis === '경쟁' ? '등록가능' : '빈수량신규',
+                // 검색 카드가 곧 그 수량의 제목이면 그대로, 아니면 끝의 수량만 바꾼다
+                sellTitle: isMain ? (r.title || '') : qtyTitleOf(r.title, s.qty),
+                sellCatalogUrl: r.catalogUrl || ''
+            }));
+        }
+
+        // [낱개 사입(순방향)] 네이버 1개 최저가를 실제 매입가로 사서 파는 칸. (v4.98)
+        //  매입 칸(수량·총액·개당원가·주소·판매처)을 그 길로 바꿔 적는다 — 엑셀에서 "어디서 얼마에 사는지" 가 바로 보이게.
+        for (const s of (r.fwdSlots || [])) {
+            out.push(Object.assign({}, r, {
+                sellQty: s.qty,
+                sellPrice: s.price,
+                sellProfit: s.profit,
+                sellCostRate: r.fwdUnitCost > 0 ? Math.round((s.profit / (r.fwdUnitCost * s.qty)) * 1000) / 10 : '',
+                sellVerdict: '낱개사입·' + (s.basis === '경쟁' ? '등록가능' : '빈수량신규'),
+                sellTitle: s.qty === 1
+                    ? ((r.linkQty === 1 && r.optionTitle) ? r.optionTitle : qtyTitleOf(r.title, 1))
+                    : qtyTitleOf(r.title, s.qty),
+                sellCatalogUrl: r.catalogUrl || '',
+                bestQty: 1, bestTotal: r.fwdUnitCost, unitCost: r.fwdUnitCost,
+                buyUrl: r.fwdLink || r.soloBuyLink || '',
+                buySeller: (r.fwdSeller || '') + ' (네이버 낱개)',
+                buyStatus: r.fwdNote || ''
             }));
         }
     }
@@ -706,9 +800,12 @@ async function loadMoney() {
         buyShipFee: Number(m.buyShipFee) || 0,   // 묶음 1건 매입 배송비 (기본 0 = 예전 그대로)
         feeRate: (Number(m.feeRate) || 6.7) / 100,
         targetProfit: Number(m.targetProfit) || 1000,
-        autoLimit: (isNaN(al) || al < 0) ? 10 : al,
+        autoLimit: S.noTail ? 0 : ((isNaN(al) || al < 0) ? 10 : al),   // 실행지시 파일이 꼬리물기를 끈 판이면 0
         autoHunt: !!m.autoHunt,           // 완전 자동: 판이 끝나면 다음 사냥감을 알아서 이어감
-        soloNewToCsv: !!m.soloNewToCsv    // 낱개 신규도 등록대기(자동등록)에 담을지 — 기본 꺼짐
+        soloNewToCsv: !!m.soloNewToCsv,   // 낱개 신규도 등록대기(자동등록)에 담을지 — 기본 꺼짐
+        forwardBuy: m.forwardBuy === undefined ? CONFIG.FORWARD_BUY : !!m.forwardBuy,   // 낱개 사입(순방향) 계산할지
+        slotRate: Number(m.slotRate) || CONFIG.SLOT_PROFIT_RATE,      // 칸별 목표순이익 비율(%)
+        reviewMin: Number(m.reviewMin) || CONFIG.REVIEW_MIN_COUNT     // 2주 리뷰 기준 (구간에서 고른 값)
     };
 }
 
@@ -1065,6 +1162,89 @@ function checkSellableOnPage() {
 // marker: 주소에 반드시 포함되어야 하는 문자열(카탈로그 ID).
 // 이걸 확인하지 않으면 "직전 페이지가 아직 complete" 인 상태를
 // 새 페이지로 착각해 같은 카탈로그를 두 번 읽게 된다.
+// ------------------------------------------------------------
+// 🚫 네이버 차단 감지 (v4.98, 루크 지시 2026-11-02)
+//   IP 가 잠시 막히면 네이버는 보안문자(자동입력 방지) 화면이나 "접근이 제한" 안내를 띄운다.
+//   그걸 모르고 계속 돌면 빈 결과만 쌓이고 차단이 길어진다. 그래서:
+//     ① 페이지를 열 때마다 차단 화면인지 본다
+//     ② 차단이면 30분 쉰다 (연달아 또 막히면 60분 → 120분). 쉬는 동안 1분마다 다시 열어 보고 풀렸으면 바로 이어간다
+//     ③ 쉬는 동안 패널·작업 창·윈도우 알림으로 "열린 창에서 보안문자를 풀어 주세요" 라고 알린다 (풀면 바로 이어간다)
+//     ④ 막혔던 그 자리(그 카탈로그)부터 다시 한다. 같은 자리에서 3번 막히면 그 카탈로그는 '차단으로 못 봄' 으로 적고 넘어간다
+// ------------------------------------------------------------
+function detectBlockOnPage() {
+    try {
+        const title = String(document.title || '');
+        const body = String(document.body && document.body.innerText || '').slice(0, 4000);
+        const url = String(location.href || '');
+        const text = title + '\n' + body;
+        const hard = /자동\s*입력\s*방지|보안\s*문자|보안\s*확인|비정상적인\s*(접근|요청|이용)|일시적으로\s*(접근|이용|서비스)[이가]?\s*(제한|중단)|접속이\s*제한|접근이\s*(제한|차단)|너무\s*많은\s*요청|요청이\s*너무\s*많|차단되었습니다|captcha|로봇이\s*아닙니다|잠시\s*후\s*다시\s*(이용|시도)/i;
+        if (hard.test(text) || /captcha|\/block|nidlogin\.login\?.*captcha/i.test(url)) {
+            return { blocked: true, why: (text.match(hard) || [url.slice(0, 60)])[0], title: title.slice(0, 60) };
+        }
+        // 카탈로그·검색 주소인데 알맹이가 거의 없다 = 빈 껍데기(차단 응답)일 때가 많다
+        if (/search\.shopping\.naver\.com\/(catalog|search)/.test(url) && body.replace(/\s+/g, '').length < 120 && !/catalog_summary_info|product_item/.test(document.documentElement.innerHTML.slice(0, 200000))) {
+            return { blocked: true, why: '빈 페이지(알맹이 없음)', title: title.slice(0, 60) };
+        }
+        return { blocked: false };
+    } catch (e) { return { blocked: false, err: String(e && e.message) }; }
+}
+
+async function isBlockedTab(tabId) {
+    try {
+        const r = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: detectBlockOnPage });
+        return (r && r[0] && r[0].result) || { blocked: false };
+    } catch (e) { return { blocked: false }; }
+}
+
+const BLOCK_WAITS_MIN = [30, 60, 120];   // 연달아 막힐 때 쉬는 시간(분)
+let _blockStreak = 0;                   // 연달아 막힌 횟수 (한 번 정상으로 지나가면 0)
+function blockRested() { _blockStreak = 0; }
+
+// 차단을 만났을 때: 알리고, 쉬고, 풀렸는지 1분마다 본다. 돌아오는 값 = 풀렸으면 true, 중지됐으면 false.
+async function blockPause(tabId, where, info) {
+    const waitMin = BLOCK_WAITS_MIN[Math.min(_blockStreak, BLOCK_WAITS_MIN.length - 1)];
+    _blockStreak++;
+    const why = (info && info.why) || '';
+    const msg = '🚫 네이버가 잠시 막았습니다 (' + where + (why ? ' · ' + why : '') + '). ' + waitMin + '분 쉬었다가 같은 자리부터 이어갑니다. '
+              + '열린 창에 보안문자가 보이면 풀어 주세요 — 풀면 바로 이어갑니다.';
+    S.note = msg;
+    S.blocked = { at: Date.now(), until: Date.now() + waitMin * 60000, where: where, why: why, streak: _blockStreak };
+    broadcast();
+    console.warn('[차단]', msg);
+    try { await fileOrderNote('[차단] ' + where + ' · ' + why + ' · ' + waitMin + '분 쉼'); } catch (_) {}
+    try { await chrome.tabs.update(tabId, { active: true }); } catch (_) {}
+    try {
+        chrome.notifications.create('selsuda-block-' + Date.now(), {
+            type: 'basic', iconUrl: 'icon128.png', title: '셀수다 자동 소싱 — 네이버가 잠시 막았습니다',
+            message: waitMin + '분 쉬었다가 이어갑니다. 크롬의 소싱 작업 창에 보안문자가 보이면 풀어 주세요. 풀면 바로 이어갑니다.',
+            priority: 2
+        });
+    } catch (_) {}
+    try {
+        await updateModal(tabId, { keyword: (S.current && S.current.keyword) || '', big: '🚫',
+            phase: '네이버가 잠시 막았어요 — ' + waitMin + '분 쉬는 중', sub: '이 창에 보안문자가 보이면 풀어 주세요. 풀면 바로 이어가요.' });
+    } catch (_) {}
+
+    const until = Date.now() + waitMin * 60000;
+    let tick = 0;
+    while (Date.now() < until) {
+        if (S.stopRequested) { S.blocked = null; return false; }
+        await sleep(60000);
+        tick++;
+        // 1분마다 다시 열어 본다 — 사용자가 보안문자를 풀었거나 차단이 일찍 풀렸으면 바로 이어간다
+        try {
+            await chrome.tabs.reload(tabId);
+            await sleep(4000);
+            const again = await isBlockedTab(tabId);
+            if (!again.blocked) { S.blocked = null; S.note = ''; broadcast(); try { await fileOrderNote('[차단 해제] ' + where + ' · ' + tick + '분 만에 풀림'); } catch (_) {} return true; }
+        } catch (_) {}
+        const left = Math.max(1, Math.round((until - Date.now()) / 60000));
+        try { await updateModal(tabId, { keyword: (S.current && S.current.keyword) || '', big: '🚫', phase: '네이버가 잠시 막았어요 — ' + left + '분 더 쉬는 중', sub: '이 창에 보안문자가 보이면 풀어 주세요. 풀면 바로 이어가요.' }); } catch (_) {}
+    }
+    S.blocked = null; S.note = ''; broadcast();
+    return true;   // 시간이 다 됐다 — 다시 해 본다 (또 막히면 더 길게 쉰다)
+}
+
 async function waitForLoad(tabId, marker, maxSeconds = 25) {
     for (let i = 0; i < maxSeconds; i++) {
         if (S.stopRequested) return false;   // 중지 눌렀으면 로딩을 기다리지 않는다
@@ -1292,6 +1472,195 @@ function extractDataFromPage() {
 //  - 못 읽거나 리뷰 영역을 못 찾으면 pass=false (안전하게 건너뜀)
 //  - 첫 카탈로그에서 리뷰 영역 HTML을 sample 로 돌려줘 선택자 보정에 쓴다
 // ------------------------------------------------------------
+// 페이지 안에서 실행: "쿠폰" 글자가 붙은 가격 요소 주변을 글자로 떠 온다 (진단용, 1회).
+//  무엇을 읽을지 아직 모른다 — 루크 화면의 진단 파일을 보고 선택자를 정한다.
+function sampleCouponCells() {
+    try {
+        const out = [];
+        const all = document.querySelectorAll('li, tr, div');
+        for (const el of all) {
+            if (out.length >= 6) break;
+            const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+            if (t.length < 8 || t.length > 220) continue;
+            if (t.indexOf('쿠폰') < 0 || !/\d{1,3}(,\d{3})+원?/.test(t)) continue;
+            // 같은 글이 부모·자식으로 겹쳐 나오지 않게 가장 안쪽만
+            if (el.querySelector && [...el.querySelectorAll('*')].some(c => (c.innerText || '').indexOf('쿠폰') >= 0 && (c.innerText || '').trim().length >= 8)) continue;
+            out.push(t + '  ⟨' + (el.className && String(el.className).slice(0, 60)) + '⟩');
+        }
+        return out.length ? 'url=' + location.href + '\n' + out.join('\n') : '';
+    } catch (e) { return 'err ' + (e && e.message); }
+}
+
+// ------------------------------------------------------------
+// [카탈로그 페이지에서 실행, 1개 옵션 상태] 판매처 목록에서 "공식" 표시가 붙은 판매처를 찾는다. (낱개 사입, v4.98)
+//   돌려주는 것: 이름 · 그 판매처의 값 · 최대할인가(있으면) · 상품 페이지 링크. 여럿이면 제일 싼 공식몰.
+//   네이버 클래스는 해시라 글자로 찾는다: "공식" 글자와 가격이 같이 있는 가장 안쪽 칸.
+function readOfficialSellerOnPage(brandName) {
+    const norm = (el) => (el && el.innerText || '').replace(/\s+/g, ' ').trim();
+    const won = (t) => { const m = String(t || '').match(/(\d{1,3}(?:,\d{3})+|\d+)\s*원/); return m ? Number(m[1].replace(/,/g, '')) : 0; };
+    const out = { found: false, name: '', price: 0, ship: 0, maxDiscount: 0, link: '', sample: '' };
+    try {
+        const all = [...document.querySelectorAll('li, div, a')];
+        const cands = all.filter(el => {
+            const t = norm(el);
+            if (t.length < 8 || t.length > 400) return false;
+            if (!/공식/.test(t) || !/\d{1,3}(?:,\d{3})+\s*원/.test(t)) return false;
+            // 실측: 요약 블록("최저 14,360원 … 공식인증 사러가기")과 광고 카드("찜하기 … 포인트 최대 700원")도 "공식" 글자가 있다
+            if (/사러가기|최저\s*[\d,]+\s*원|^찜하기|포인트 최대/.test(t)) return false;
+            // 실측 8차: 딴 상품 추천 카드("구시다플러스 200g 6,100원 … 북설악 공식 스토어")는 **값이 "공식" 보다 앞에** 온다.
+            //   이 카탈로그의 판매처 카드는 "닥터지 공식 … 28,900원" 처럼 가게 이름(공식)이 먼저, 값이 뒤다. 값이 먼저면 상품 카드다.
+            //   (값만으로 거르는 15% 규칙은 forwardBuyStep 에 따로 있다 — 둘 다 쓴다)
+            const _pi = t.search(/\d{1,3}(?:,\d{3})+\s*원/), _oi = t.search(/공식/);
+            if (_pi >= 0 && _oi > _pi) return false;
+            return el.tagName === 'A' || !!el.querySelector('a[href]');
+        });
+        const inner = cands.filter(el => !cands.some(o => o !== el && el.contains(o)));
+        const picks = [];
+        for (const el of inner) {
+            // 값: "최대할인가 N원" 을 먼저 떼어낸 뒤, 포인트·배송비가 아닌 첫 금액 (실측: 카드 글자가 한 줄로 이어져 온다)
+            let t = norm(el);
+            let maxDiscount = 0;
+            const md = t.match(/최대할인가\s*(\d{1,3}(?:,\d{3})+|\d+)\s*원/);
+            if (md) { maxDiscount = Number(md[1].replace(/,/g, '')); t = t.replace(md[0], ' '); }
+            let price = 0;
+            const re = /(\d{1,3}(?:,\d{3})+|\d{4,})\s*원/g;
+            let mm;
+            while ((mm = re.exec(t))) {
+                const before = t.slice(Math.max(0, mm.index - 12), mm.index);
+                if (/포인트|적립|배송비|최대\s*$/.test(before)) continue;
+                price = Number(mm[1].replace(/,/g, '')); break;
+            }
+            // 이름: 통짜 글자에서 "OO 공식" / "OO 공식스토어" 의 OO. (실측: 줄 나누기가 카드마다 달라 줄로는 못 집는다)
+            //   "브랜드 공식"·"도움말"·"최대 혜택"·"단위당 최저가" 같은 배지 글자는 이름이 아니다. "[이솝 공식]" 은 이솝.
+            let name = '';
+            const full = norm(el);
+            const nre = /([^\s\[\]]+)\s*공식(?:\s*(?:몰|스토어|인증|브랜드스토어))?/g;
+            let nm;
+            while ((nm = nre.exec(full))) {
+                // 실측: 글자가 띄어쓰기 없이 붙어 "분말3,500원배송비3,000원하남댁" 처럼 온다 → 마지막 "원" 뒤만 이름
+                let cand = nm[1].replace(/^[\[\(]+|[\]\)]+$/g, '').replace(/^.*원/, '').replace(/^.*배송/, '').replace(/^(오늘출발|내일도착|당일출발|도착보장)/, '').trim();
+                if (!cand || /^(브랜드|도움말|최대|혜택|단위당|최저가|찜하기|가맹점)$/.test(cand) || /\d/.test(cand)) continue;
+                name = cand; break;
+            }
+            // 배송비: "배송비 3,000원" 이면 그만큼, "무료배송/배송비 무료" 면 0. 카탈로그 최저가는 배송비 포함이라 같이 비교해야 한다.
+            let ship = 0;
+            const sm = full.match(/배송비\s*(\d{1,3}(?:,\d{3})+|\d+)\s*원/);
+            if (sm) ship = Number(sm[1].replace(/,/g, ''));
+            else if (/무료배송|배송비\s*무료|배송비무료/.test(full)) ship = 0;
+            if (!price) continue;
+            const a = el.tagName === 'A' ? el : el.querySelector('a[href]');
+            picks.push({ name: name || '공식몰', price: price, ship: ship, maxDiscount: maxDiscount, link: (a && a.href) || '', text: norm(el).slice(0, 160) });
+        }
+        if (!picks.length) return out;
+        // 브랜드 이름이 든 공식몰이 있으면 그것(진짜 브랜드 공식몰), 없으면 배송비 포함 제일 싼 것
+        picks.sort((a, b) => (a.price + a.ship) - (b.price + b.ship));
+        const bn = String(brandName || '').toLowerCase().replace(/[\s\-_·.]/g, '');
+        const p = (bn.length >= 2 && picks.find(x => x.name.toLowerCase().replace(/[\s\-_·.]/g, '').includes(bn))) || picks[0];
+        out.found = true; out.name = p.name; out.price = p.price; out.ship = p.ship; out.maxDiscount = p.maxDiscount; out.link = p.link;
+        out.sample = picks.map(x => x.text).join('\n');
+        return out;
+    } catch (e) { out.sample = 'err ' + (e && e.message); return out; }
+}
+
+// ------------------------------------------------------------
+// [스마트스토어 상품 페이지에서 실행] 1개를 실제로 얼마에 사는지 읽는다. (낱개 사입, v4.98)
+//   실제 매입가 = 최종 구매 예상가(최대할인가) − 구매적립(기본+추가) − 멤버십적립(멤버십 추가+네이버 현대카드)
+//   리뷰적립·결제적립은 빼지 않는다 (루크 규칙). 멤버십·현대카드는 "다 갖춘다"는 전제로 최대 조건을 쓴다.
+//   숫자는 "최대 적립 포인트" 글자를 눌러 열리는 "나의 혜택 전체보기" 창에서 읽는다 (루크 화면 실측 2026-11-01).
+//   창 글자(modalText)도 돌려줘 첫 상품은 진단 파일에 담는다 — 네이버가 창을 바꾸면 거기서 보인다.
+async function readStoreBenefitOnPage() {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const norm = (el) => (el && el.innerText || '').replace(/\s+/g, ' ').trim();
+    const won = (t) => { const m = String(t || '').match(/(\d{1,3}(?:,\d{3})+|\d+)\s*원/); return m ? Number(m[1].replace(/,/g, '')) : 0; };
+    const out = { ok: false, reason: '', storeName: '', shipping: 0, salePrice: 0, maxDiscount: 0, finalPrice: 0, priceBasis: '',
+                  points: { basic: 0, extra: 0, membership: 0, card: 0 }, modalText: '' };
+    try {
+        // ① 페이지 글자에서 최대할인가 (창이 안 열려도 이것만은 건진다)
+        const bodyLines = (document.body.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+        for (let i = 0; i < bodyLines.length; i++) {
+            const t = bodyLines[i];
+            if (/최대할인가/.test(t)) { out.maxDiscount = won(t) || won(bodyLines[i - 1]) || won(bodyLines[i + 1]); if (out.maxDiscount) break; }
+        }
+        try { const h = document.querySelector('meta[property="og:site_name"]'); if (h) out.storeName = h.getAttribute('content') || ''; } catch (_) {}
+        // 배송비: 1개를 살 때 내는 돈이라 매입가에 들어간다. "무료배송" 이면 0, "배송비 3,000원" 이면 그만큼.
+        {
+            const bt = bodyLines.join(' ');
+            const sm = bt.match(/배송비\s*(\d{1,3}(?:,\d{3})+|\d+)\s*원/);
+            if (sm) out.shipping = Number(sm[1].replace(/,/g, ''));
+            else if (/무료배송|배송비\s*무료/.test(bt)) out.shipping = 0;
+            else out.shipping = 0;
+        }
+
+        // ② "최대 적립 포인트" 를 누른다
+        const cands = [...document.querySelectorAll('a, button, span, div, strong')]
+            .filter(el => /최대\s*적립\s*포인트/.test(norm(el)) && norm(el).length <= 40);
+        const btn = cands.length ? cands[cands.length - 1] : null;
+        if (!btn) { out.reason = '적립 글자 없음'; if (out.maxDiscount) { out.finalPrice = out.maxDiscount; out.priceBasis = '페이지 최대할인가(적립 못 읽음)'; } return out; }
+        btn.click();
+
+        // ③ 창이 뜰 때까지 기다린다 (최대 4초)
+        let modal = null;
+        for (let k = 0; k < 8 && !modal; k++) {
+            await sleep(500);
+            const boxes = [...document.querySelectorAll('div, section, aside')]
+                .filter(el => { const t = norm(el); return /구매적립/.test(t) && /멤버십적립|최종 구매 예상가/.test(t) && t.length > 60 && t.length < 8000; })
+                .sort((a, b) => norm(a).length - norm(b).length);
+            // 실측: 제일 작은 상자는 "포인트 혜택" 만 있고 최종 구매 예상가는 그 바깥에 있다 → 예상가까지 품은 것을 먼저 고른다
+            modal = boxes.find(el => /최종 구매 예상가/.test(norm(el))) || boxes[0] || null;
+        }
+        if (!modal) { out.reason = '혜택 창이 안 열림'; if (out.maxDiscount) { out.finalPrice = out.maxDiscount; out.priceBasis = '페이지 최대할인가(창 못 염)'; } return out; }
+        const text = (modal.innerText || '');
+        out.modalText = text.trim().slice(0, 3000);
+
+        // ④ 줄 단위로 읽는다. 머리글(구매적립/리뷰적립/결제적립/멤버십적립)이 나오면 그 아래 금액을 그 묶음으로 센다.
+        //    "기본적립 145원" 처럼 한 줄에 있든, "기본적립" 다음 줄에 "145원" 이 오든 다 센다.
+        const lines = text.split('\n').map(x => x.trim()).filter(Boolean);
+        //  실측: 창 글자는 "145원 / 290원 / 기본적립 / 추가구매적립" 처럼 금액이 이름보다 먼저 올 수 있다.
+        //  그래서 묶음(구매적립/멤버십적립) 안에서 이름 줄과 금액 줄을 따로 모아 순서대로 짝짓는다.
+        //  짝이 안 맞으면 합계만 맞추고(기본/멤버십에 몰아 넣음) — 매입가 계산에는 합계만 쓰인다.
+        let sec = '';
+        const bag = { buy: { labels: [], amounts: [] }, member: { labels: [], amounts: [] } };
+        for (let i = 0; i < lines.length; i++) {
+            const t = lines[i];
+            if (/^최종\s*구매\s*예상가/.test(t)) { out.finalPrice = won(t) || won(lines[i + 1]); sec = 'end'; continue; }
+            if (/^구매적립/.test(t)) { sec = 'buy'; continue; }
+            if (/리뷰적립/.test(t)) { sec = 'review'; continue; }
+            if (/^결제적립/.test(t)) { sec = 'pay'; continue; }
+            if (/^멤버십적립/.test(t)) { sec = 'member'; continue; }
+            if (/^최대\s*포인트\s*적립|할인 총 합계|상품 판매가|^쿠폰|할인 혜택|포인트 혜택/.test(t)) { sec = ''; continue; }
+            if (sec !== 'buy' && sec !== 'member') continue;
+            const v = won(t);
+            const label = t.replace(/(\d{1,3}(?:,\d{3})+|\d+)\s*원/g, '').replace(/[•·\-–>]/g, '').trim();
+            // 항목 이름으로 치는 줄 = "…적립" 또는 "…결제 시". 도움말·네이버페이·네이버플러스멤버십 같은 꼬리표 줄은 아니다.
+            if (label.length >= 2 && /적립|결제\s*시/.test(label) && !/^(도움말|네이버페이|네이버플러스멤버십)$/.test(label)) bag[sec].labels.push(label);
+            if (v) bag[sec].amounts.push(v);
+        }
+        const assign = (secName, isSpecial, specialKey, normalKey) => {
+            const b = bag[secName];
+            if (b.labels.length === b.amounts.length && b.labels.length > 0) {
+                b.labels.forEach((lb, k) => { out.points[isSpecial.test(lb) ? specialKey : normalKey] += b.amounts[k]; });
+            } else {
+                out.points[normalKey] += b.amounts.reduce((a, c) => a + c, 0);
+            }
+        };
+        assign('buy', /추가/, 'extra', 'basic');
+        assign('member', /현대카드/, 'card', 'membership');
+        if (out.finalPrice) out.priceBasis = '창의 최종 구매 예상가';
+        else if (out.maxDiscount) { out.finalPrice = out.maxDiscount; out.priceBasis = '페이지 최대할인가'; }
+        out.ok = out.finalPrice > 0;
+        if (!out.ok) out.reason = '가격을 못 읽음';
+
+        // ⑤ 닫는다 (ESC → 닫기 버튼 순)
+        try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true })); } catch (_) {}
+        await sleep(300);
+        try {
+            const x = [...document.querySelectorAll('button, a')].find(b => /닫기|close/i.test(norm(b) + ' ' + (b.getAttribute('aria-label') || '')) && norm(b).length <= 6);
+            if (x) x.click();
+        } catch (_) {}
+        return out;
+    } catch (e) { out.reason = 'err ' + (e && e.message); return out; }
+}
+
 async function scrapeReviewVelocity(days, minCount, maxPages) {
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const now = Date.now(), DAY = 86400000, cutoff = now - days * DAY;
@@ -1320,7 +1689,7 @@ async function scrapeReviewVelocity(days, minCount, maxPages) {
     }
     if (_id) {
         try {
-            let recent = 0, seen = 0, total = -1, pages = 0, newestTs = 0, sample = '';
+            let recent = 0, seen = 0, total = -1, pages = 0, newestTs = 0, oldestTs = 0, sample = '';
             const PAGE_CAP = Math.max(1, Number(maxPages) || 6);
             let page = 1, done = false, capped = false;
             while (page <= PAGE_CAP && !done) {
@@ -1346,7 +1715,8 @@ async function scrapeReviewVelocity(days, minCount, maxPages) {
                     if (t == null) continue;
                     seen++;
                     if (t > newestTs) newestTs = t;
-                    if (t >= cutoff) recent++; else done = true;   // RECENT 정렬 → 14일 밖이 나오면 이후는 다 오래됨
+                    if (!oldestTs || t < oldestTs) oldestTs = t;
+                    if (t >= cutoff) recent++; else done = true;   // RECENT 정렬 → 기간 밖이 나오면 이후는 다 오래됨
                 }
                 pages = page; page++;
             }
@@ -1355,11 +1725,18 @@ async function scrapeReviewVelocity(days, minCount, maxPages) {
             // 안전장치: API 날짜가 '진짜 최근 날짜'로 제대로 읽힌 경우만 신뢰. 이상하면(미래·너무 옛날·못 읽음) DOM 폴백.
             const sane = seen > 0 && newestTs <= now + 2 * DAY && newestTs > now - 3650 * DAY;
             if (sane) {
-                const pass = recent >= minCount;
-                sample = 'API pass=' + pass + ' recent=' + recent + ' seen=' + seen + ' total=' + total
+                // 상한에 닿았으면(기간 안 리뷰가 더 있다) 본 것의 속도로 기간 전체를 환산한다.
+                //  예) 120개가 4일 동안 달렸다 → 2주면 420개. 1,000개짜리 카탈로그도 6페이지로 가늠.
+                let projected = 0;
+                if (capped && recent > 0) {
+                    const spanDays = Math.max(0.5, (newestTs - oldestTs) / DAY);
+                    projected = Math.max(recent, Math.round(recent / spanDays * days));
+                }
+                const pass = (projected || recent) >= minCount;
+                sample = 'API pass=' + pass + ' recent=' + recent + ' projected=' + projected + ' seen=' + seen + ' total=' + total
                     + ' pages=' + pages + '/' + PAGE_CAP + ' capped=' + capped
                     + ' / days=' + days + ' min=' + minCount + '\n' + sample;
-                return { pass, recentCount: recent, seen, total, capped, why: '', sample };
+                return { pass, recentCount: recent, projected, seen, total, capped, why: '', sample };
             }
         } catch (e) { /* API 실패 → 아래 DOM 폴백 */ }
     }
@@ -2129,6 +2506,8 @@ function putReviewInfo(cat, rv, days) {
     if (rv.mode === 'rate' && Number(rv.projected) > 0) {   // API 실패 → 속도 추정값
         n = Number(rv.projected);
         cat.reviewGuess = true;
+    } else if (rv.capped && Number(rv.projected) > 0) {      // 상한에 닿음 → 속도로 환산한 값 ('+' 표시)
+        n = Number(rv.projected);
     }
     cat.reviewRecent = n;
     cat.reviewMore = !!rv.capped;
@@ -2138,8 +2517,7 @@ function putReviewInfo(cat, rv, days) {
 
 function soloTitleOf(title) {
     // 끝의 수량 표기를 떼고 ", 1개" 를 붙인다. 네이버는 제목의 수량을 보고 옵션을 만든다.
-    const t = String(title || '').replace(/\s*,?\s*\d{1,3}\s*개\s*$/, '').trim();
-    return t + ', 1개';
+    return qtyTitleOf(title, 1);
 }
 
 function soloNewPlan(row, unitCost, money) {
@@ -2176,6 +2554,148 @@ function soloNewPlan(row, unitCost, money) {
     // 비율이 높으면 버리진 않되, 눈으로 한 번 보라고 표시한다
     if (ratio > CONFIG.SOLO_NEW_MAX_RATIO) row.confidence = "확인필요(낱개 " + ratio + "배)";
     return row;
+}
+
+// ------------------------------------------------------------
+// [빈 수량 신규] 옵션 사이에 비어 있는 수량 자리를 찾는다.
+//
+//  낱개신규(1개)와 같은 생각을 2개·3개… 로 넓힌 것이다.
+//  카탈로그에 1개·10개만 있으면 2~9개는 **아무도 안 걸어 둔 자리**다.
+//  그 자리에 걸면 깎을 상대가 없으니 판매가를 우리가 정한다.
+//
+//  왜 수량을 늘리면 되나: 택배비는 몇 개를 팔든 한 건만 나간다.
+//  개당 차익이 800원인 상품은 1개로 팔면 택배비 3,000원을 혼자 뒤집어쓰지만,
+//  6개를 묶으면 차익이 4,800원이 되어 택배비를 내고도 남는다.
+//
+//  판매가는 "목표순이익이 남는 최소값"과 "옆 옵션들 사이의 자연스러운 값" 중
+//  큰 쪽으로 잡는다. 그리고 두 가지를 반드시 지킨다:
+//    ① 더 많이 주는 윗 옵션보다 싸야 한다 (아니면 그걸 사지 이걸 안 산다)
+//    ② 개당 값이 아랫 옵션의 개당 값보다 싸야 한다 (많이 살수록 싸야 말이 된다)
+//  둘 중 하나라도 못 지키면 그 수량은 후보가 아니다.
+// ------------------------------------------------------------
+function gapQtyPlan(row, unitCost, money, clean) {
+    row.gapQty = ""; row.gapPrice = ""; row.gapProfit = "";
+
+    if (!CONFIG.GAP_QTY) return row;
+    if (!unitCost || !clean || clean.length < 2) return row;
+
+    const feeRate = money.feeRate;
+    const denom = 1 - feeRate;
+    if (denom <= 0) return row;
+
+    // 수량 → 총액. 옵션이 있는 수량은 후보에서 빠진다(이미 누가 걸어 둔 자리).
+    const priceOf = {};
+    const qtys = [];
+    for (const o of clean) {
+        const q = Number(o.qty) || 0, p = Number(o.price) || 0;
+        if (q > 0 && p > 0) { priceOf[q] = p; qtys.push(q); }
+    }
+    if (qtys.length < 2) return row;
+    qtys.sort((a, b) => a - b);
+
+    const minQ = qtys[0], maxQ = qtys[qtys.length - 1];
+    const top = Math.min(maxQ - 1, CONFIG.GAP_QTY_MAX);
+
+    // 작은 수량부터 본다 — 적게 묶을수록 사 가는 사람이 많다
+    for (let n = minQ + 1; n <= top; n++) {
+        if (priceOf[n]) continue;              // 이미 있는 자리
+
+        // 바로 아래/위 옵션
+        let lo = 0, hi = 0;
+        for (const q of qtys) { if (q < n) lo = q; else { hi = q; break; } }
+        if (!lo || !hi) continue;
+
+        // 목표순이익이 그대로 남는 최소 판매가
+        const floorPrice = Math.ceil((money.targetProfit + unitCost * n + money.shippingFee) / denom);
+        // 아래~위 옵션을 잇는 선 위의 값 (카탈로그 사다리에서 가장 자연스러운 값)
+        const lineP = Math.round(priceOf[lo] + (priceOf[hi] - priceOf[lo]) * ((n - lo) / (hi - lo)));
+
+        const price = Math.max(floorPrice, lineP);
+
+        // ① 윗 옵션보다 싸야 한다
+        if (price >= priceOf[hi]) continue;
+        // ② 개당 값이 아랫 옵션의 개당 값보다 싸야 한다
+        if (price / n >= priceOf[lo] / lo) continue;
+
+        // 순이익은 다른 행과 똑같은 식으로 (엑셀 숫자만으로 검산해도 맞게)
+        const profit = price - Math.round(price * feeRate) - unitCost * n - money.shippingFee;
+        if (profit < money.targetProfit) continue;   // 반올림 때문에 한 끗 모자랄 수 있다
+
+        row.gapQty = n;
+        row.gapPrice = price;
+        row.gapProfit = profit;
+        return row;
+    }
+    return row;
+}
+
+// 제목 끝의 수량 표기를 떼고 ", N개" 를 붙인다 (네이버는 제목의 수량을 보고 옵션을 만든다)
+// ------------------------------------------------------------
+// [수량 칸 전부] 1~SLOT_MAX 칸을 하나씩 따져 row.slots 에 담는다. (v4.97)
+//  그룹상품으로 한 번에 올릴 재료다. 한 칸 = { qty, price, profit, basis, ref }
+//    basis '경쟁' : 그 수량 칸에 남이 있다 → 그 값 - 10원. 최소 순이익 미만이면 뺀다.
+//    basis '빈칸' : 아무도 없다 → 목표순이익이 그대로 남는 값. 더 큰 묶음보다 비싸면 뺀다.
+//  1개 칸은 기존 계산(basePrice / 낱개신규)이 맡으므로 여기서는 2개부터 본다.
+//  unitCost 를 바꿔 넣으면 다른 매입 경로(낱개 사입)로도 같은 계산이 된다.
+// ------------------------------------------------------------
+function slotTarget(unitCost, n, money) {
+    const rate = (Number(money.slotRate) || CONFIG.SLOT_PROFIT_RATE) / 100;
+    const want = Math.round(unitCost * n * rate);
+    return Math.max(CONFIG.SLOT_PROFIT_MIN, Math.min(CONFIG.SLOT_PROFIT_MAX, want));
+}
+
+// 칸 계산의 알맹이. 묶음 사입(slotPlan)과 낱개 사입(순방향)이 같이 쓴다.
+//   fromQty   : 몇 개 칸부터 볼지 (묶음 사입은 2, 낱개 사입은 1)
+//   capBySolo : 빈 칸 값이 "1개 값 × n − 10원" 을 넘지 못하게 막을지 (낱개 사입만)
+//               — 1개를 n번 사는 것보다 비싸면 아무도 안 산다. 루크: "표시 최저가 기준으로 n개 칸을 조금 싸게".
+function planSlots(unitCost, money, clean, fromQty, capBySolo) {
+    const slots = [];
+    if (!unitCost || !clean || !clean.length) return slots;
+    const feeRate = money.feeRate, ship = money.shippingFee;
+    const denom = 1 - feeRate;
+    if (denom <= 0) return slots;
+    const priceOf = {};
+    for (const o of clean) {
+        const q = Number(o.qty) || 0, p = Number(o.price) || 0;
+        if (q > 0 && p > 0) priceOf[q] = p;
+    }
+    const qtys = Object.keys(priceOf).map(Number).sort((a, b) => a - b);
+    const solo = priceOf[1] || 0;
+    const profitAt = (price, n) => price - Math.round(price * feeRate) - unitCost * n - ship;
+    for (let n = (fromQty || 2); n <= CONFIG.SLOT_MAX; n++) {
+        const target = slotTarget(unitCost, n, money);
+        let price, basis, ref = '';
+        if (priceOf[n]) {
+            price = priceOf[n] - 10;                       // [-10원 규칙]
+            basis = '경쟁'; ref = priceOf[n];
+            if (profitAt(price, n) < CONFIG.SLOT_PROFIT_MIN) continue;
+        } else {
+            price = Math.ceil((target + unitCost * n + ship) / denom);
+            basis = '빈칸';
+            if (capBySolo && solo > 0 && n > 1) {
+                const cap = solo * n - 10;
+                if (price > cap) price = cap;              // 목표보다 덜 남더라도 1개×n 보다는 싸야 한다
+            }
+            // 더 많이 주는 묶음보다 비싸면 아무도 안 산다
+            let dead = false;
+            for (const q of qtys) if (q > n && priceOf[q] <= price) { dead = true; break; }
+            if (dead) continue;
+        }
+        const profit = profitAt(price, n);
+        if (profit < CONFIG.SLOT_PROFIT_MIN) continue;
+        slots.push({ qty: n, price: price, profit: profit, basis: basis, ref: ref });
+    }
+    return slots;
+}
+
+function slotPlan(row, unitCost, money, clean) {
+    row.slots = planSlots(unitCost, money, clean, 2, false);
+    return row;
+}
+
+function qtyTitleOf(title, n) {
+    const t = String(title || '').replace(/\s*,?\s*\d{1,3}\s*개\s*$/, '').trim();
+    return t + ', ' + n + '개';
 }
 
 function computeMargin(row, money) {
@@ -2286,6 +2806,8 @@ function computeMargin(row, money) {
         row.feeAmount = ""; row.profit = ""; row.marginRate = ""; row.costRate = "";
         row.targetPrice = ""; row.headroom = ""; row.confidence = "";
         row.mainQty = ""; row.mainPrice = ""; row.mainProfit = "";
+        row.gapQty = ""; row.gapPrice = ""; row.gapProfit = "";
+        row.slots = [];
         row.verdict = verdict;
         return row;
     };
@@ -2344,6 +2866,12 @@ function computeMargin(row, money) {
     // 목표순이익이 그대로 남는 최저 판매가 (1개 기준).
     // 반올림한 개당원가로 계산한다 — 엑셀에 보이는 숫자만으로 검산해도 맞아야 하므로. (v4.92)
     row.targetPrice = denom > 0 ? Math.round((targetProfit + unitCost + shippingFee) / denom) : "";
+
+    // [빈 수량 신규] 옵션 사이에 비어 있는 수량 자리를 찾는다.
+    //  1개 옵션이 있든 없든 따진다 — 1개로는 안 되는 상품이 바로 이쪽의 후보다.
+    gapQtyPlan(row, unitCost, money, clean);
+    // [수량 칸 전부] 2~12개 칸을 전부 계산해 둔다 — 그룹상품으로 올릴 재료 (v4.97)
+    slotPlan(row, unitCost, money, clean);
 
     // 1개 옵션이 없으면 1개 기준 순이익을 낼 수 없다. 숫자를 지어내지 않고 비워 둔다. (v4.91)
     //   묶음수량·매입총액·개당원가·목표판매가는 위에서 채워뒀으니 엑셀에서 눈으로 볼 수 있다.
@@ -2449,6 +2977,65 @@ function selfCheckRow(row, money) {
         }
     }
 
+    // 6) 빈 수량 신규 행도 같은 식으로 검산한다.
+    //    값을 우리가 정하는 행이라, 틀려도 비교할 최저가가 없다 — 여기서 못 잡으면 못 잡는다.
+    if (row.gapQty && row.gapPrice) {
+        const n = row.gapQty;
+        const gExpect = row.gapPrice - Math.round(row.gapPrice * money.feeRate)
+            - row.unitCost * n - money.shippingFee;
+        if (gExpect !== row.gapProfit) {
+            issues.push('빈수량신규 순이익 불일치 (검산 ' + gExpect + ' vs 기록 ' + row.gapProfit + ')');
+        }
+        if (row.gapProfit < money.targetProfit) {
+            issues.push('빈수량신규가 목표순이익 미달 (' + row.gapProfit + ' < ' + money.targetProfit + ')');
+        }
+        // 이미 누가 걸어 둔 수량에 겹쳐 제안하면 안 된다 (빈 자리가 아니다)
+        if ((row.cleanOptions || []).some(o => Number(o.qty) === n)) {
+            issues.push('빈수량신규인데 그 수량 옵션이 이미 있음 (' + n + '개)');
+        }
+        if (!new RegExp(',\\s*' + n + '개$').test(qtyTitleOf(row.title, n))) {
+            issues.push('빈수량신규 제목 끝에 ", ' + n + '개" 가 안 붙음 (' + qtyTitleOf(row.title, n) + ')');
+        }
+    }
+
+    // 7) 수량 칸 전부 — 작업지시서로 그대로 올라가는 숫자다. 칸마다 다시 계산해 본다. (v4.97)
+    //   빈 칸은 목표순이익이 그대로 남아야 하고(최소 1,000 · 최대 10,000),
+    //   경쟁 칸은 그 수량 옵션이 실제로 있고 그 값보다 10원 싸야 한다.
+    for (const s of (row.slots || [])) {
+        const n = Number(s.qty), price = Number(s.price);
+        if (!(n > 1) || !(price > 0) || !(row.unitCost > 0)) { issues.push('수량 칸이 비정상 (' + JSON.stringify(s) + ')'); continue; }
+        const expect = price - Math.round(price * money.feeRate) - row.unitCost * n - money.shippingFee;
+        if (expect !== s.profit) issues.push(n + '개 칸 순이익 불일치 (검산 ' + expect + ' vs 기록 ' + s.profit + ')');
+        if (s.profit < CONFIG.SLOT_PROFIT_MIN) issues.push(n + '개 칸이 최소 순이익 미달 (' + s.profit + ')');
+        const has = (row.cleanOptions || []).find(o => Number(o.qty) === n);
+        if (s.basis === '경쟁') {
+            if (!has) issues.push(n + '개 칸이 경쟁인데 그 옵션이 없음');
+            else if (price !== Number(has.price) - 10) issues.push(n + '개 칸 경쟁가 - 10원이 아님 (' + price + ' vs ' + has.price + ')');
+        } else if (s.basis === '빈칸') {
+            if (has) issues.push(n + '개 칸이 빈칸인데 옵션이 이미 있음');
+            // 판매가를 올림(ceil)해서 1원이 더 남을 수 있다
+            if (s.profit > CONFIG.SLOT_PROFIT_MAX + 1) issues.push(n + '개 칸 순이익이 상한 초과 (' + s.profit + ')');
+        } else issues.push(n + '개 칸 근거가 이상함 (' + s.basis + ')');
+    }
+
+    // 8) 낱개 사입 칸 — 실제 매입가(최대할인가 − 적립)로 같은 검산. 빈 칸은 1개×n 보다 비싸면 안 된다. (v4.98)
+    if (row.fwdSlots && row.fwdSlots.length) {
+        const uc = Number(row.fwdUnitCost);
+        if (!(uc > 0) || (Number(row.fwdPay) + (Number(row.fwdShip) || 0) - Number(row.fwdPoints)) !== uc) {
+            issues.push('낱개 매입가 불일치 (' + row.fwdPay + ' + ' + (Number(row.fwdShip) || 0) + ' − ' + row.fwdPoints + ' vs ' + uc + ')');
+        }
+        const one = (row.cleanOptions || []).find(o => Number(o.qty) === 1);
+        const solo1 = one ? Number(one.price) : (Number(row.basePrice) > 0 ? Number(row.basePrice) : (Number(row.lowestPrice) || 0));
+        for (const s of row.fwdSlots) {
+            const n = Number(s.qty), price = Number(s.price);
+            if (!(n >= 1) || !(price > 0)) { issues.push('낱개사입 칸이 비정상 (' + JSON.stringify(s) + ')'); continue; }
+            const expect = price - Math.round(price * money.feeRate) - uc * n - money.shippingFee;
+            if (expect !== s.profit) issues.push('낱개사입 ' + n + '개 칸 순이익 불일치 (검산 ' + expect + ' vs 기록 ' + s.profit + ')');
+            if (s.profit < CONFIG.SLOT_PROFIT_MIN) issues.push('낱개사입 ' + n + '개 칸이 최소 순이익 미달 (' + s.profit + ')');
+            if (s.basis === '빈칸' && n > 1 && solo1 > 0 && price > solo1 * n - 10) issues.push('낱개사입 ' + n + '개 칸이 1개×' + n + ' 보다 비쌈 (' + price + ')');
+        }
+    }
+
     if (row.profit === '' || row.profit === undefined) {
         reportIssues(row, issues);
         return;
@@ -2512,7 +3099,9 @@ function buildSheetAoa(data) {
         "2주리뷰", "하루리뷰", "전체리뷰",
         "카탈로그URL", "상품명",
         "매입수량", "매입총액", "개당원가", "판매가",
-        "매입옵션URL", "매입처", "매입상태", "검색키워드", "수집시각"
+        "매입옵션URL", "매입처", "매입상태", "검색키워드", "수집시각",
+        "낱개사입",                                    // 순방향(네이버 1개 사입)이 왜 안 됐는지 / 됐으면 계산식 (v4.98)
+        "사입길"                                       // 이 행이 어느 길인지: 묶음(역방향) / 낱개(순방향) (v4.98, 루크 요청)
     ];
     const numOr = (v) => {
         if (v === '' || v === undefined || v === null) return '';
@@ -2548,10 +3137,28 @@ function buildSheetAoa(data) {
             r.buySeller || '',                    // 그 페이지의 최저가 판매처 (여기서 산다)
             r.buyStatus || '',                    // 판매중단 의심⚠️ 표시 (빈칸 = 문구 미발견)
             r.searchKeyword || '',
-            r.scrapedAt || ''                     // 이 가격을 언제 본 것인지
+            r.scrapedAt || '',                    // 이 가격을 언제 본 것인지
+            fwdCell(r),
+            isFwdRow(r) ? '낱개(순방향)' : '묶음(역방향)'
         ]);
     }
     return aoa;
+}
+
+// 이 행이 낱개 사입(순방향) 행인가 — 판정이 "낱개사입·…" 로 시작한다
+function isFwdRow(r) { return String(r.sellVerdict || '').indexOf('낱개사입') === 0; }
+
+// 낱개사입 칸 글자. 낱개사입 행이면 "공식몰 OO · 최저가와 +N원", 1개 행이면 안 된 이유(또는 계산식), 나머지는 빈칸.
+function fwdCell(r) {
+    const v = String(r.sellVerdict || '');
+    if (v.indexOf('낱개사입') === 0) {
+        const gap = Number(r.fwdGap);
+        return '공식몰 ' + (r.fwdSeller || '') + (isNaN(gap) ? '' : ' · 최저가와 ' + (gap >= 0 ? '+' : '') + gap.toLocaleString('ko-KR') + '원');
+    }
+    if (Number(r.sellQty !== undefined ? r.sellQty : 1) !== 1) return '';
+    if (r.fwdStatus) return r.fwdStatus;
+    if (r.fwdNote) return r.fwdNote;
+    return '';
 }
 
 function makeSheet(data) {
@@ -2565,7 +3172,9 @@ function makeSheet(data) {
         { wch: 13 },                                     // 카탈로그URL (제목 폭)
         { wch: 52 },                                     // 상품명 (제목이 잘리지 않게 넉넉히)
         { wch: 8 }, { wch: 11 }, { wch: 11 }, { wch: 11 },// 매입수량/총액/원가/판매가
-        { wch: 13 }, { wch: 12 }, { wch: 13 }, { wch: 20 }, { wch: 13 } // 매입옵션URL/매입처/매입상태/키워드("(자동추가)" 포함해 넉넉히)/수집시각
+        { wch: 13 }, { wch: 12 }, { wch: 13 }, { wch: 20 }, { wch: 13 }, // 매입옵션URL/매입처/매입상태/키워드("(자동추가)" 포함해 넉넉히)/수집시각
+        { wch: 30 },                                     // 낱개사입 (v4.98)
+        { wch: 12 }                                      // 사입길
     ];
 
     // 금액 칸에 천단위 쉼표
@@ -2943,7 +3552,7 @@ async function exportAll() {
     //  ① 등록가능 + 신뢰도 높음
     //  ② 등록가능 + 확인필요
     //  ③ 등록가능 + 판매중단 의심 (신뢰도와 무관하게, 매입 자체가 위험하므로 뒤로)
-    //  ④ 낱개신규 + 신뢰도 높음   ⑤ 낱개신규 + 확인필요/위험   (v4.92)
+    //  ④ 새 수량 자리(낱개신규·빈수량신규) + 신뢰도 높음   ⑤ 그 외
     //  ⑥ 조금 남음   ⑦ PASS   ⑧ 낱개 전용/옵션 없음/읽기실패 등 나머지
     const orderOf = new Map();
     for (const r of S.results) {
@@ -2962,8 +3571,10 @@ async function exportAll() {
             if (risky(r)) return 2;
             return sure ? 0 : 1;
         }
-        // 낱개 신규 — 등록가능 다음 자리. 등록대기에는 상자를 켠 경우에만 들어간다 (v4.92)
-        if (v === '낱개신규') return (risky(r) || !sure) ? 4 : 3;
+        // 새 수량 자리(낱개신규·빈수량신규) — 등록가능 다음 자리.
+        //  참고할 최저가가 없는 값이라, 등록대기에는 상자를 켠 경우에만 들어간다.
+        if (v === '낱개신규' || v === '빈수량신규') return (risky(r) || !sure) ? 4 : 3;
+        if (v.indexOf('낱개사입') === 0) return 3;   // 실제 매입가로 계산한 칸 — 작업지시서로만 간다 (csv 아님)
         if (v.indexOf('조금') === 0) return 5;
         if (v === 'PASS') return 6;
         return 7;
@@ -2984,6 +3595,9 @@ async function exportAll() {
     // 파일 1개 안에 [전체] 시트 + 키워드별 시트를 넣는다 (키워드 시트도 같은 순위로)
     const kwOrder = [...orderOf.keys()];
     const sheets = [{ name: '전체', data: sorted }];
+    // 두 길을 시트로 나눈다 (루크 요청 2026-11-02): 묶음 사입(역방향) / 낱개 사입(순방향). 전체 시트에도 "사입길" 열로 표시된다.
+    sheets.push({ name: '묶음사입(역방향)', data: sorted.filter(r => !isFwdRow(r)) });
+    sheets.push({ name: '낱개사입(순방향)', data: sorted.filter(r => isFwdRow(r)) });
     for (const kw of kwOrder) {
         const rows = expanded.filter(r => r.searchKeyword === kw)
             .sort((a, b) => {
@@ -3034,9 +3648,10 @@ async function exportAll() {
     //  - 확인필요/판매중단의심 상품은 자동 등록 사고를 막기 위해 뺀다 (사람이 엑셀 보고 결정)
     //  - 중복 등록 방지는 자동등록 프로그램 자체 기능에 맡긴다 (사용자 확인, 2026-09-09)
     try {
-        //  - 낱개신규(rank 3)는 「낱개 신규도 자동등록에 담기」 상자를 켠 경우에만 넣는다 (v4.92)
+        //  - 새 수량 자리(rank 3)는 「새 수량 자리도 자동등록에 담기」 상자를 켠 경우에만 넣는다
         //    참고할 최저가가 없는 가격이라, 기본은 엑셀로만 보고 사람이 판단한다
-        const cand = sorted.filter(r => rankOf(r) === 0 || (money.soloNewToCsv && rankOf(r) === 3));
+        const cand = sorted.filter(r => String(r.sellVerdict || '').indexOf('낱개사입') !== 0
+            && (rankOf(r) === 0 || (money.soloNewToCsv && rankOf(r) === 3)));
         if (cand.length) {
             const esc = (v) => '"' + String(v === undefined || v === null ? '' : v).replace(/"/g, '""') + '"';
             const lines = [['상품명', '판매수량', '판매가', '1건순이익', '카탈로그URL', '매입옵션URL', '매입처', '매입수량', '매입총액', '개당원가', '검색키워드', '수집시각'].join(',')];
@@ -3061,6 +3676,95 @@ async function exportAll() {
             });
         }
     } catch (e) { console.error('[등록대기] 저장 실패:', e); }
+
+    // [작업지시서] 자동등록이 그대로 복사해 그룹상품으로 올릴 수 있는 자료. (v4.97)
+    //  상품 하나에 "이 카탈로그를, 이 매입처에서 사서, 이 수량 칸들에 이 가격으로" 가 전부 들어 있다.
+    //  가격·제목·수량은 여기서 끝나므로 자동등록은 AI 를 칸마다 쓰지 않고 그룹당 한 번(상세·사진)만 쓴다.
+    //  규격(WORKORDER_SPEC)이 바뀌면 자동등록이 "어디까지 아는지" 로 선을 긋는다.
+    try {
+        const wo = buildWorkOrder(S.results, money, risky);
+        if (wo.상품.length) {
+            await chrome.downloads.download({
+                url: 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(wo, null, 1)),
+                filename: '셀수다결과/작업지시서.json',
+                conflictAction: 'overwrite'
+            });
+        }
+    } catch (e) { console.error('[작업지시서] 저장 실패:', e); }
+}
+
+// 작업지시서 본문. 엑셀·CSV 와 같은 숫자에서 나온다 (따로 계산하지 않는다).
+//  risky(r) = 매입 자체가 위험한 것(판매중단·불일치·공식몰 아님) — 빼는 규칙은 등록대기와 같다.
+function buildWorkOrder(results, money, risky) {
+    const MIN = CONFIG.SLOT_PROFIT_MIN;
+    let ver = '';
+    try { ver = chrome.runtime.getManifest().version; } catch (_) {}
+    const items = [];
+    const oneTitleOf = (r) => (r.linkQty === 1 && r.optionTitle) ? r.optionTitle : qtyTitleOf(r.title, 1);
+    const mk = (r, buy, slots) => {
+        const cid = (String(r.catalogUrl || '').match(/catalog\/(\d+)/) || [])[1] || '';
+        return {
+            상품명: r.title || '',
+            카탈로그URL: r.catalogUrl || '',
+            카탈로그번호: cid,
+            카테고리: r.catPath || r.catSmall || '',
+            신뢰도: r.confidence || '',
+            리뷰: { 이주: r.reviewRecent === undefined ? '' : r.reviewRecent, 전체: r.reviewTotal === undefined ? '' : r.reviewTotal },
+            매입: buy,
+            그룹: { 판매옵션: '수량', 대표수량: slots[0].수량 },
+            칸: slots,
+            검색키워드: r.searchKeyword || '',
+            수집시각: r.scrapedAt || ''
+        };
+    };
+    for (const r of results) {
+        if (!r) continue;
+
+        // ── 묶음 사입(역방향): 매입처에서 묶음을 사서 나눠 판다 ──
+        if (!risky(r)) {
+            const slots = [];
+            // 1개 칸: 남이 있으면 기존 계산(basePrice), 없으면 낱개신규. 최소 순이익 미만이면 안 올린다.
+            if (r.soloNew && Number(r.soloProfit) >= MIN) {
+                slots.push({ 수량: 1, 제목: soloTitleOf(r.title), 판매가: r.soloPrice, 순이익: r.soloProfit, 근거: '빈칸', 경쟁가: '' });
+            } else if (String(r.verdict) === '등록가능' && Number(r.profit) >= MIN) {
+                slots.push({ 수량: 1, 제목: oneTitleOf(r), 판매가: r.basePrice, 순이익: r.profit, 근거: '경쟁', 경쟁가: r.basePrice + 10 });
+            }
+            for (const s of (r.slots || [])) {
+                const isMain = (s.basis === '경쟁' && Number(r.mainQty) === s.qty);
+                slots.push({ 수량: s.qty, 제목: isMain ? (r.title || '') : qtyTitleOf(r.title, s.qty),
+                             판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '' });
+            }
+            if (slots.length) items.push(mk(r, {
+                경로: '묶음', 매입처: r.buySeller || '', 옵션URL: r.buyUrl || '',
+                수량: r.bestQty, 총액: r.bestTotal, 개당원가: r.unitCost, 상태: r.buyStatus || ''
+            }, slots));
+        }
+
+        // ── 낱개 사입(순방향): 네이버 1개 최저가를 실제 매입가로 사서 칸에 판다 (규격 1.1) ──
+        const f = r.fwdSlots || [];
+        if (f.length && !r.notOfficial && !r.fwdStatus) {
+            const slots2 = f.map(s => ({
+                수량: s.qty, 제목: s.qty === 1 ? oneTitleOf(r) : qtyTitleOf(r.title, s.qty),
+                판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || ''
+            }));
+            items.push(mk(r, {
+                경로: '낱개', 매입처: r.fwdSeller || '', 옵션URL: r.fwdLink || r.soloBuyLink || '',
+                수량: 1, 총액: r.fwdUnitCost, 개당원가: r.fwdUnitCost,
+                최대할인가: r.fwdPay, 배송비: Number(r.fwdShip) || 0, 적립합계: r.fwdPoints, 적립: r.fwdPointDetail || {},
+                공식몰최저가차이: r.fwdGap === undefined ? '' : r.fwdGap, 상태: ''
+            }, slots2));
+        }
+    }
+    return {
+        규격: CONFIG.WORKORDER_SPEC,
+        소싱버전: ver,
+        만든시각: new Date().toISOString(),
+        설정: { 수수료퍼센트: Math.round(money.feeRate * 1000) / 10, 택배비: money.shippingFee,
+                칸비율퍼센트: Number(money.slotRate) || CONFIG.SLOT_PROFIT_RATE,
+                최소순이익: CONFIG.SLOT_PROFIT_MIN, 최대순이익: CONFIG.SLOT_PROFIT_MAX,
+                리뷰기준2주: Number(money.reviewMin) || CONFIG.REVIEW_MIN_COUNT },
+        상품: items
+    };
 }
 
 // 진단 파일 저장 (키워드 1개짜리 실행에서도 저장된다)
@@ -3098,6 +3802,15 @@ async function processKeyword(keyword, money) {
     // ----- 검색 결과에서 카탈로그 목록 -----
     await chrome.tabs.update(tabId, { url: searchUrlBase + encodeURIComponent(bareKw(keyword)) });
     await waitForLoad(tabId, null);
+    // 🚫 검색 결과가 차단 화면이면 쉬었다가 다시 연다 (최대 3번)
+    for (let bt = 0; bt < 3; bt++) {
+        const bk = await isBlockedTab(tabId);
+        if (!bk.blocked) { blockRested(); break; }
+        const ok = await blockPause(tabId, '검색', bk);
+        if (!ok) return;
+        await chrome.tabs.update(tabId, { url: searchUrlBase + encodeURIComponent(bareKw(keyword)) });
+        await waitForLoad(tabId, null);
+    }
     await updateModal(tabId, {
         keyword: keyword, big: '···',
         phase: '카탈로그 목록을 모으는 중', sub: '검색 결과를 훑어보고 있어요'
@@ -3361,6 +4074,112 @@ async function deepScanCategories(tabId, keyword, money) {
 }
 
 // ------------------------------------------------------------
+// [낱개 사입(순방향)] 카탈로그 하나에 대해: 1개 최저가 판매처 페이지로 가서
+//   실제 매입가 = 최대할인가 − 적립(구매·멤버십·현대카드) 을 읽고, 그 원가로 1~12개 칸을 계산한다. (v4.98)
+//   스마트스토어/브랜드스토어가 아니면 못 읽는다(다른 몰의 혜택 창은 모른다) — 상태만 적고 넘어간다.
+//   화장품은 1개 판매처도 공식이어야 한다 (묶음 사입과 같은 규칙).
+//   결과: cat.fwdUnitCost(실제 매입가) · cat.fwdSlots(칸) · cat.fwdStatus(못 한 이유, 빈칸이면 성공)
+// ------------------------------------------------------------
+// [낱개 사입] 카탈로그 페이지(1개 옵션 상태)에서 공식몰 판매처를 읽어 cat.official 에 둔다. 첫 카탈로그는 진단에 샘플을 남긴다.
+async function captureOfficialSeller(tabId, cat, isFirst) {
+    try {
+        const o = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: readOfficialSellerOnPage, args: [String(cat.brand || cat.maker || '')] });
+        const r = o && o[0] && o[0].result;
+        cat.official = (r && r.found) ? { name: r.name, price: r.price, ship: Number(r.ship) || 0, maxDiscount: r.maxDiscount, link: r.link } : null;
+        if (isFirst) S.failures.push({
+            cat: { title: '[공식몰 샘플] ' + cat.title, catalogUrl: cat.catalogUrl, collectStatus: '참고자료' },
+            debug: { sampleHtml: (r && r.found ? '찾음: ' + JSON.stringify(cat.official) : '못 찾음') + '\n' + ((r && r.sample) || '') }
+        });
+    } catch (e) { cat.official = null; }
+}
+
+async function forwardBuyStep(tabId, cat, money, isFirst) {
+    cat.fwdSlots = []; cat.fwdStatus = '';
+    // basePrice 는 "경쟁가 − 10" 이라, 카탈로그의 실제 1개 최저가는 +10 이다 (실측: 15,490 ↔ 15,500)
+    const price1 = Number(cat.basePrice) > 0 ? Number(cat.basePrice) + 10 : (Number(cat.lowestPrice) || 0);
+    if (!(price1 > 0)) { cat.fwdStatus = '1개 가격 없음'; return; }
+    // [공식몰 규칙(루크)] 공식몰이 있어야 하고, 최저가이거나 최저가와 1,000원 미만 차이여야 한다. 사는 곳도 그 공식몰이다.
+    const off = cat.official;
+    if (!off || !off.link) { cat.fwdStatus = '공식몰 없음'; return; }
+    const offTotal = Number(off.price) + (Number(off.ship) || 0);
+    // 카탈로그 최저가(배송비 포함)보다 15% 넘게 싼 "공식몰" 은 이 카탈로그 상품이 아니다 (실측: 25kg 다시다에 6,100원짜리 딴 상품 카드)
+    if (offTotal < price1 * 0.85) { cat.fwdStatus = '공식몰 카드가 딴 상품(값 ' + offTotal.toLocaleString('ko-KR') + ' vs 최저 ' + price1.toLocaleString('ko-KR') + ' · ' + off.name + ')'; return; }
+    const gap = offTotal - price1;   // 카탈로그 최저가는 배송비 포함 → 카드 값도 배송비를 더해 비교
+    if (gap >= CONFIG.FORWARD_OFFICIAL_GAP) { cat.fwdStatus = '공식몰이 최저가 아님(+' + gap.toLocaleString('ko-KR') + '원 · ' + off.name + ')'; return; }
+    cat.soloBuyLink = off.link;
+    cat.soloSeller = off.name;
+    cat.fwdGap = gap;
+
+    await updateModal(tabId, {
+        keyword: cat.searchKeyword || '', big: '🛍️',
+        phase: '낱개 매입가 확인 중',
+        sub: (cat.soloSeller ? cat.soloSeller + ' · ' : '') + String(cat.title || '').slice(0, 30)
+    });
+    await chrome.tabs.update(tabId, { url: cat.soloBuyLink });
+    await waitForLoad(tabId, null, 15);
+    await restSleep(rand(1500, 2500));
+    let url = '';
+    try { url = String((await chrome.tabs.get(tabId)).url || ''); } catch (_) {}
+    cat.fwdLink = url || cat.soloBuyLink;
+    // 🚫 차단 화면이면 쉬었다가 한 번 더 열어 본다
+    {
+        const bk = await isBlockedTab(tabId);
+        if (bk.blocked) {
+            const ok = await blockPause(tabId, '공식몰 페이지', bk);
+            if (!ok) { cat.fwdStatus = '중지'; return; }
+            await chrome.tabs.update(tabId, { url: cat.soloBuyLink });
+            await waitForLoad(tabId, null, 15);
+            await restSleep(rand(1500, 2500));
+            const bk2 = await isBlockedTab(tabId);
+            if (bk2.blocked) { cat.fwdStatus = '차단으로 못 읽음'; return; }
+        }
+    }
+    if (!/smartstore\.naver\.com|brand\.naver\.com/.test(url)) {
+        cat.fwdStatus = '스마트스토어 아님(' + ((url.match(/^https?:\/\/([^\/]+)/) || [])[1] || '?') + ')';
+        return;
+    }
+
+    const out = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: readStoreBenefitOnPage });
+    const b = out && out[0] && out[0].result;
+    // 첫 상품의 혜택 창 글자를 진단에 남긴다 — 네이버가 창을 바꾸면 여기서 보인다
+    if (!S.fwdSampleDone && b && (b.modalText || b.ok)) S.failures.push({
+        cat: { title: '[적립 모달 샘플] ' + cat.title, catalogUrl: cat.catalogUrl, collectStatus: '참고자료' },
+        debug: { sampleHtml: 'url=' + url + '\n읽은 것: ' + JSON.stringify({ ok: b.ok, reason: b.reason, finalPrice: b.finalPrice, shipping: b.shipping, maxDiscount: b.maxDiscount, points: b.points, basis: b.priceBasis })
+                 + '\n' + (b.modalText || '') }
+    });
+    if (b && (b.modalText || b.ok)) S.fwdSampleDone = true;
+    if (!b || !b.ok) { cat.fwdStatus = '혜택 창 못 읽음(' + ((b && b.reason) || '?') + ')'; return; }
+
+    // 화장품은 1개 판매처도 공식이어야 한다
+    if (/화장품|미용/.test(String(cat.catPath || cat.catSmall || ''))) {
+        const seller = String(cat.soloSeller || b.storeName || '');
+        const normSN = (x) => String(x || '').toLowerCase().replace(/[\s\-_·.]/g, '');
+        const bn = normSN(cat.brand), sn = normSN(seller);
+        const official = cat.buyOfficial === true || /공식/.test(seller) || (bn.length >= 2 && sn.includes(bn)) || /brand\.naver\.com/.test(url);
+        if (!official) { cat.fwdStatus = '1개 판매처가 공식 아님(화장품)(' + (seller.slice(0, 16) || '판매처미상') + ')'; return; }
+    }
+
+    const p = b.points || {};
+    const ptSum = (Number(p.basic) || 0) + (Number(p.extra) || 0) + (Number(p.membership) || 0) + (Number(p.card) || 0);
+    const payPrice = Number(b.finalPrice) || 0;
+    const ship = Number(b.shipping) || 0;
+    const unitCost = payPrice + ship - ptSum;
+    if (!(unitCost > 0)) { cat.fwdStatus = '매입가 이상(' + payPrice + '+' + ship + '−' + ptSum + ')'; return; }
+    cat.fwdPay = payPrice;
+    cat.fwdShip = ship;
+    cat.fwdPoints = ptSum;
+    cat.fwdPointDetail = { 기본적립: Number(p.basic) || 0, 추가구매적립: Number(p.extra) || 0, 멤버십추가적립: Number(p.membership) || 0, 현대카드: Number(p.card) || 0 };
+    cat.fwdUnitCost = unitCost;
+    cat.fwdSeller = cat.soloSeller || b.storeName || '';
+    cat.fwdBasis = b.priceBasis || '';
+    cat.fwdNote = '최대할인가 ' + payPrice.toLocaleString('ko-KR') + (ship ? ' + 배송비 ' + ship.toLocaleString('ko-KR') : '') + ' − 적립 ' + ptSum.toLocaleString('ko-KR') + ' = ' + unitCost.toLocaleString('ko-KR');
+    const clean = (cat.cleanOptions && cat.cleanOptions.length) ? cat.cleanOptions : [{ qty: 1, price: price1 }];
+    cat.fwdSlots = planSlots(unitCost, money, clean, 1, true);
+    if (!cat.fwdSlots.length) cat.fwdStatus = '남는 칸 없음';
+    console.log('[낱개사입]', cat.title, cat.fwdNote, '· 칸', cat.fwdSlots.map(x => x.qty + '개:' + x.price).join(' '));
+}
+
+// ------------------------------------------------------------
 // 카탈로그 묶음 방문 (새 키워드든, 이어보기든 여기로 온다)
 // ------------------------------------------------------------
 async function visitCatalogGroup(keyword, cats, money, resumed) {
@@ -3404,10 +4223,14 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
         //     네이버가 카드를 바꿔도 되던 것이 안 되는 일은 없어야 한다.
         const cq = Array.isArray(cat.cardQtys) ? cat.cardQtys : [];
         if (cq.length === 1 && cq[0] === 1) {
-            cat.options = [];
             cat.soloOnly = true;
-            cat.collectStatus = '낱개 전용(건너뜀)';
             S.skipN.solo++;
+        }
+        //   ★낱개 사입(순방향)이 켜져 있으면 낱개 전용도 연다 — 1개를 싸게 사서 2~12개 칸에 파는 길이 있다 (v4.98).
+        //     리뷰 기준은 똑같이 걸리므로 안 팔리는 것은 여기서도 걸러진다.
+        if (cat.soloOnly && !money.forwardBuy) {
+            cat.options = [];
+            cat.collectStatus = '낱개 전용(건너뜀)';
             computeMargin(cat, money);
             S.pending = S.pending.filter(p => p !== cat);
             S.results.push(cat);
@@ -3421,6 +4244,20 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
             await chrome.tabs.update(tabId, { url: cat.catalogUrl });
             const loaded = await waitForLoad(tabId, marker);
             if (!loaded) throw new Error('로딩 시간 초과: ' + cat.catalogUrl);
+            // 🚫 차단 화면이면 쉬었다가 이 카탈로그부터 다시 (같은 자리 3번이면 포기하고 넘어간다)
+            {
+                const bk = await isBlockedTab(tabId);
+                if (bk.blocked) {
+                    cat._blockTries = (cat._blockTries || 0) + 1;
+                    if (cat._blockTries <= 3) {
+                        const ok = await blockPause(tabId, '카탈로그 열기', bk);
+                        if (!ok) break;               // 중지
+                        i--; continue;                // 같은 카탈로그 다시
+                    }
+                    throw new Error('차단으로 못 봄: ' + (bk.why || ''));
+                }
+                blockRested();
+            }
 
             await updateModal(tabId, {
                 keyword: keyword,
@@ -3442,7 +4279,7 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                 try {
                     const rvo = await chrome.scripting.executeScript({
                         target: { tabId: tabId }, func: scrapeReviewVelocity,
-                        args: [CONFIG.REVIEW_DAYS, CONFIG.REVIEW_MIN_COUNT, CONFIG.REVIEW_COUNT_PAGES]
+                        args: [CONFIG.REVIEW_DAYS, money.reviewMin || CONFIG.REVIEW_MIN_COUNT, CONFIG.REVIEW_COUNT_PAGES]
                     });
                     rv = rvo && rvo[0] && rvo[0].result;
                 } catch (e) { rv = null; }
@@ -3452,6 +4289,17 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                         cat: { title: '[리뷰 구조 샘플] ' + cat.title, catalogUrl: cat.catalogUrl, collectStatus: '참고자료' },
                         debug: { sampleHtml: rv.sample, reviewRecent: rv.recentCount, reviewSeen: rv.seen, why: rv.why }
                     });
+                    // [낱개 사입 준비] 판매처 목록에서 "쿠폰" 이 붙은 가격 칸이 어떻게 생겼는지도 1회 담는다.
+                    //  카탈로그 최저가는 즉시할인가 기준이라 쿠폰가는 로그인한 화면에만 따로 보인다(2025-03~).
+                    //  그 값을 읽을 수 있으면 "네이버에서 1개를 싸게 사서 묶음 칸에 판다"는 둘째 매입 경로가 된다.
+                    try {
+                        const cp = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: sampleCouponCells });
+                        const txt = cp && cp[0] && cp[0].result;
+                        if (txt) S.failures.push({
+                            cat: { title: '[쿠폰가 구조 샘플] ' + cat.title, catalogUrl: cat.catalogUrl, collectStatus: '참고자료' },
+                            debug: { sampleHtml: txt }
+                        });
+                    } catch (_) {}
                 }
                 if (!rv || !rv.pass) {
                     cat.collectStatus = '리뷰 부족(건너뜀)';
@@ -3460,7 +4308,7 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                     S.skipN.review++;
                     S.pending = S.pending.filter(p => p !== cat);   // 다시 방문 안 하게 대기줄에서 뺀다
                     console.log('[리뷰필터] 건너뜀:', cat.title, '· 최근' + CONFIG.REVIEW_DAYS + '일 리뷰 '
-                        + (rv ? rv.recentCount : '?') + '개 (기준 ' + CONFIG.REVIEW_MIN_COUNT + ')');
+                        + (rv ? rv.recentCount : '?') + '개 (기준 ' + (money.reviewMin || CONFIG.REVIEW_MIN_COUNT) + ')');
                     await restSleep(rand(CONFIG.CATALOG_DELAY_MIN, CONFIG.CATALOG_DELAY_MAX));
                     continue;   // 옵션·마진·꼬리물기 전부 건너뛰고 다음 카탈로그로
                 }
@@ -3511,6 +4359,9 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                     if (got && got.catalogTitle) cat.optionTitle = got.catalogTitle;   // 1개 옵션 상태의 제목
                     if (got) cat.coupangFast = !!got.coupangFast;   // 1개 최저가 판매처가 쿠팡 빠른배송인지
                     if (got) cat.buyOfficial = !!got.sellerOfficial;   // 최저가 판매처가 공식몰인지 (화장품 공식몰 필터용)
+                    // [낱개 사입] 1개 최저가 판매처의 상품 페이지 — 순방향 단계가 여기로 가서 실제 매입가를 읽는다 (v4.98)
+                    if (got && minQty === 1) { cat.soloBuyLink = got.buyLink || ''; cat.soloSeller = got.sellerName || ''; }
+                    if (money.forwardBuy && minQty === 1) await captureOfficialSeller(tabId, cat, i === 0);   // 공식몰 판매처 (1개 옵션 상태에서)
                     // 키워드마다 첫 카탈로그 1건만 판매처 구조 샘플을 진단에 담는다
                     // (쿠팡 빠른배송 감지를 정확히 다시 만들기 위한 재료)
                     if (got && got.sellerSample && i === 0) {
@@ -3523,12 +4374,13 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
 
                 // [매입처 판매 여부 확인] 등록 후보 상품만, 매입처 상품 페이지를
                 // 실제로 열어 판매중단/품절 문구를 확인한다. 표시만 하고 제외하지 않는다.
-                //  낱개 신규도 등록 후보다 — 안 넣으면 제품불일치·화장품 공식몰 확인이
-                //  낱개 신규에만 안 돌아간다 (v4.92)
+                //  새 수량 자리(낱개신규·빈수량신규)도 등록 후보다 — 안 넣으면
+                //  제품불일치·화장품 공식몰 확인이 그쪽에만 안 돌아간다
                 const isCandidate =
                     (cat.profit !== '' && cat.profit !== undefined && cat.profit >= money.targetProfit)
                     || (cat.mainProfit !== '' && cat.mainProfit !== undefined && cat.mainProfit >= money.targetProfit)
-                    || (cat.soloProfit !== '' && cat.soloProfit !== undefined && cat.soloProfit >= money.targetProfit);
+                    || (cat.soloProfit !== '' && cat.soloProfit !== undefined && cat.soloProfit >= money.targetProfit)
+                    || (cat.gapProfit !== '' && cat.gapProfit !== undefined && cat.gapProfit >= money.targetProfit);
 
                 // [카테고리·제조사·브랜드] 페이지를 떠나기 전에 읽어둔다.
                 //   꼬리물기 키워드 재료이면서, 카테고리 성적을 쌓는 재료이기도 하다.
@@ -3581,6 +4433,16 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                         await chrome.tabs.update(tabId, { url: cat.buyLinkHref });
                         await waitForLoad(tabId, null, 15);
                         await restSleep(rand(1500, 2500));
+                        {   // 🚫 차단이면 쉬었다가 한 번 더
+                            const bk = await isBlockedTab(tabId);
+                            if (bk.blocked) {
+                                const ok = await blockPause(tabId, '매입처 페이지', bk);
+                                if (!ok) throw new Error('중지');
+                                await chrome.tabs.update(tabId, { url: cat.buyLinkHref });
+                                await waitForLoad(tabId, null, 15);
+                                await restSleep(rand(1500, 2500));
+                            }
+                        }
                         const sc = await chrome.scripting.executeScript({
                             target: { tabId: tabId }, func: checkSellableOnPage
                         });
@@ -3605,15 +4467,36 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                 cat.options = [];
                 const reason = (result && result.reason) || 'unknown';
                 cat.collectStatus = reason === 'no-qty-text' ? '옵션없음(확인)' : '읽기실패(의심)';
-                if (reason !== 'no-qty-text') {
+                if (cat.soloOnly) cat.collectStatus = '낱개 전용';   // 수량 칸이 없는 것이 정상이다
+                if (money.forwardBuy) {
+                    // [낱개 사입] 수량 칸이 없어도 "최저가 사러가기" 링크는 있다 — 1개 판매처와 카테고리를 담아 둔다 (v4.98)
+                    try {
+                        const u1 = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: clickQtyAndInspect, args: [1, Number(cat.lowestPrice) || 0] });
+                        const g1 = u1 && u1[0] && u1[0].result;
+                        if (g1) { cat.soloBuyLink = g1.buyLink || ''; cat.soloSeller = g1.sellerName || ''; cat.buyOfficial = !!g1.sellerOfficial; }
+                    } catch (_) {}
+                    await captureOfficialSeller(tabId, cat, i === 0);
+                    try {
+                        const ti = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: readTailInfoOnPage });
+                        const t0 = ti && ti[0] && ti[0].result;
+                        if (t0) { cat.catSmall = t0.category || ''; cat.catPath = t0.categoryPath || ''; cat.maker = t0.maker || ''; cat.brand = t0.brand || ''; }
+                    } catch (_) {}
+                }
+                if (reason !== 'no-qty-text' && !cat.soloOnly) {
                     S.failures.push({ cat: { title: cat.title, catalogUrl: cat.catalogUrl, collectStatus: cat.collectStatus }, debug: (result && result.debug) || null });
                 }
             }
         } catch (e) {
             console.error('[옵션 추출] 실패:', cat.catalogUrl, e);
             cat.options = [];
-            cat.collectStatus = '페이지 열기 실패';
+            cat.collectStatus = /차단으로 못 봄/.test(String(e && e.message)) ? '차단으로 못 봄' : '페이지 열기 실패';
             S.failures.push({ cat: { title: cat.title, catalogUrl: cat.catalogUrl, collectStatus: cat.collectStatus }, debug: { error: String(e && e.message || e) } });
+        }
+
+        // [낱개 사입(순방향)] 네이버 1개 최저가 판매처에서 실제 매입가(최대할인가 − 적립)를 읽어 1~12개 칸을 계산한다 (v4.98)
+        if (money.forwardBuy && !S.stopRequested && cat.collectStatus !== '페이지 열기 실패') {
+            try { await forwardBuyStep(tabId, cat, money, i === 0); }
+            catch (e) { cat.fwdSlots = []; cat.fwdStatus = '읽기 실패(' + String(e && e.message || e).slice(0, 40) + ')'; }
         }
 
         computeMargin(cat, money);
@@ -3777,6 +4660,7 @@ async function workerLoop() {
         const member = await verifyMember();
         if (!member.ok) {
             S.lastError = memberFailText(member);
+            S.haltedFor = 'member'; _haltAt = Date.now();   // 5분 뒤에나 다시 본다
             return;
         }
 
@@ -3786,10 +4670,12 @@ async function workerLoop() {
         if (CONFIG.REQUIRE_NAVER_LOGIN) {
             const naverOk = await isNaverLoggedIn();
             if (!naverOk) {
-                S.lastError = '네이버 로그인이 필요합니다. 로그인 창을 열었습니다.';
-                await chrome.tabs.create({ url: NAVER_LOGIN_URL, active: true });
+                const opened = await openNaverLoginOnce();
+                S.lastError = '네이버 로그인이 필요합니다. ' + (opened ? '로그인 창을 열었습니다.' : '열어 둔 로그인 창에서 로그인해 주세요.') + ' 로그인하면 5분 안에 저절로 이어갑니다.';
+                S.haltedFor = 'login'; _haltAt = Date.now();
                 return;
             }
+            S.haltedFor = '';
         }
 
         // 이번 실행의 묶음 표시: "몇 차 꼬리인지 + 시작 시각"을 파일명에 넣어
@@ -3934,14 +4820,16 @@ async function workerLoop() {
         await persist();
         broadcast();
         // [완전 자동] 위에서 다음 판이 태워졌으면 잠시 숨 고르고 스스로 재시작
-        if (!wasStopped && S.queue.length > 0) {
+        if (!wasStopped && S.queue.length > 0 && !S.haltedFor) {   // 로그인·회원에서 멈춘 것은 3초마다 다시 돌지 않는다
             setTimeout(() => ensureWorker(), 3000);
         }
     }
 }
 
-function ensureWorker() {
-    if (!S.running && (S.queue.length > 0 || S.pending.length > 0)) workerLoop();
+function ensureWorker(force) {
+    if (S.running) return;
+    if (!force && S.haltedFor && Date.now() - _haltAt < HALT_RETRY_MS) return;   // 로그인·회원 멈춤 중 — 5분에 한 번만
+    if (S.queue.length > 0 || S.pending.length > 0) workerLoop();
 }
 
 // ── 🔁 소싱↔등록 번갈아 (소싱 쪽) ────────────────────────────────
@@ -3993,10 +4881,98 @@ function coordStartResumePoller() {
 }
 
 // ------------------------------------------------------------
+// 📄 실행지시 파일 — 확장 폴더의 `실행지시.json` 을 따른다. 패널 없이 돌릴 때 쓴다 (클로드 점검·예약 실행). (v4.98)
+//   { "id": "아무 글자", "키워드": ["닥터지 토너"], "기록무시": true, "기록비우기": false, "새로고침": false, "꼬리물기": true }
+//   - 같은 id 는 한 번만 따른다 (chrome.storage.local.fileOrderDone). 다시 돌리려면 id 를 바꾼다.
+//   - 기록무시: 1개월 재검색 제한을 그 키워드만 푼다.   기록비우기: 패널의 🧹 와 같다.   새로고침: 확장을 다시 켠다.
+//   - 돌고 있는 중이면 끝난 뒤 다음 확인(1분마다) 때 따른다.
+//   - 무엇을 했는지 `셀수다결과/진단/실행지시_응답.txt` 에 적는다 (패널이 없어도 결과를 알 수 있게).
+// ------------------------------------------------------------
+async function fileOrderNote(text) {
+    try {
+        const line = new Date().toLocaleString('ko-KR') + '  ' + text + '\n';
+        await chrome.downloads.download({
+            url: 'data:text/plain;charset=utf-8,' + encodeURIComponent('\ufeff' + line),
+            filename: '셀수다결과/진단/실행지시_응답.txt', conflictAction: 'overwrite'
+        });
+    } catch (_) {}
+}
+
+let _fileOrderBusy = false;
+async function maybeRunFileOrder() {
+    if (_fileOrderBusy) return;
+    _fileOrderBusy = true;
+    try {
+        let j = null;
+        try {
+            const res = await fetch(chrome.runtime.getURL('실행지시.json'), { cache: 'no-store' });
+            if (!res.ok) return;
+            j = await res.json();
+        } catch (_) { return; }
+        if (!j || !j.id) return;
+        const st = await chrome.storage.local.get(['fileOrderDone', 'fileOrderReloaded']);
+        if (st.fileOrderDone === String(j.id)) return;
+        if (S.running) return;                                   // 끝난 뒤에 따른다
+        // 새로고침이 켜진 지시는 먼저 한 번 새로고침하고(코드를 새로 읽게), 다시 켜지면 그때 키워드를 따른다
+        if (j.새로고침 && st.fileOrderReloaded !== String(j.id)) {
+            await chrome.storage.local.set({ fileOrderReloaded: String(j.id) });
+            await fileOrderNote('[' + j.id + '] ' + appVer() + ' · 새로고침');
+            setTimeout(() => chrome.runtime.reload(), 1500);
+            return;
+        }
+        await chrome.storage.local.set({ fileOrderDone: String(j.id) });
+
+        const did = [];
+        if (j.탭닫기) {
+            // 프로그램이 열어 둔 네이버 로그인 창들을 닫는다 (실측: 수십 개가 쌓였다)
+            try {
+                const tabs = await chrome.tabs.query({ url: ['https://nid.naver.com/*'] });
+                for (const t of tabs) { try { await chrome.tabs.remove(t.id); } catch (_) {} }
+                _loginTabId = null;
+                did.push('로그인 탭 ' + tabs.length + '개 닫음');
+            } catch (e) { did.push('탭 닫기 실패: ' + (e && e.message)); }
+        }
+        if (j.기록비우기) {
+            S.queue = []; S.done = []; S.results = []; S.failures = []; S.pending = []; S.lastError = '';
+            S.autoAdded = 0; S.deepAdded = 0; S.nextTargets = []; S.runStamp = ''; S.runRound = 1;
+            S.runHits = 0; S.runActiveMs = 0; S.skipN = newSkipN(); S.catStat = {};
+            did.push('기록 비움');
+        }
+        S.noTail = (j.꼬리물기 === false);   // 이 지시에서만 꼬리물기(자동추가 키워드)를 끈다 — 점검용
+        const kws = Array.isArray(j.키워드) ? j.키워드.map(x => String(x).trim()).filter(Boolean) : [];
+        if (j.기록무시 && kws.length) {
+            const sh = await chrome.storage.local.get('kwHistory');
+            const h = sh.kwHistory || {};
+            for (const k of kws) delete h[bareKw(k)];
+            await chrome.storage.local.set({ kwHistory: h });
+            did.push('재검색 제한 해제');
+        }
+        let added = 0;
+        for (const k of kws) if (!S.queue.includes(k)) { S.queue.push(k); added++; }
+        if (added) did.push('키워드 ' + added + '개 추가: ' + kws.join(', ') + (S.noTail ? ' (꼬리물기 끔)' : ''));
+        await persist(); broadcast();
+        await fileOrderNote('[' + j.id + '] ' + appVer() + ' · ' + (did.join(' / ') || '할 것 없음'));
+        if (added) {
+            S.haltedFor = '';
+            ensureWorker(true);
+            // 30초 뒤 어디까지 갔는지(회원 확인·네이버 로그인에서 막혔는지) 한 줄 더 남긴다
+            setTimeout(() => fileOrderNote('[상태 30초] ' + (S.lastError ? '오류: ' + S.lastError : (S.running ? '돌고 있음 · ' + (S.note || (S.current && S.current.phase) || '') : '멈춤'))), 30000);
+        }
+    } catch (e) {
+        try { await fileOrderNote('실패: ' + (e && e.message || e)); } catch (_) {}
+    } finally { _fileOrderBusy = false; }
+}
+try {
+    chrome.alarms.create('fileOrder', { periodInMinutes: 1 });
+    chrome.alarms.onAlarm.addListener(a => { if (a && a.name === 'fileOrder') { maybeRunFileOrder(); ensureWorker(); } });   // 로그인/회원 멈춤도 5분마다 다시 본다
+} catch (e) { /* alarms 권한이 없으면 패널이 열릴 때만 본다 */ }
+
+// ------------------------------------------------------------
 // 켜질 때 한 번: 새 버전이 있는지 보고, 폴더가 이미 갈렸으면 스스로 새로고침한다.
 //  ★파일 맨 끝에 둡니다 — S·CONFIG 가 다 만들어진 뒤에 돌아야 합니다.
 // ------------------------------------------------------------
 try {
     clearReloadCountIfArrived();
     maybeCheckUpdate();
+    setTimeout(maybeRunFileOrder, 3000);   // 켜지자마자 실행지시 파일도 본다 (S 복원 뒤)
 } catch (e) { /* 업데이트 확인 실패가 프로그램을 막으면 안 된다 */ }

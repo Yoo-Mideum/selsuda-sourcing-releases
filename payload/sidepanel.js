@@ -333,7 +333,7 @@ function bindMainEvents() {
     });
 
     // 계산 설정 저장
-    for (const id of ['set-ship', 'set-buyship', 'set-fee', 'set-target', 'set-autolimit', 'set-autohunt', 'set-solocsv']) {
+    for (const id of ['set-ship', 'set-buyship', 'set-fee', 'set-target', 'set-autolimit', 'set-autohunt', 'set-solocsv', 'set-forward']) {
         $(id).addEventListener('change', saveMoneyInputs);
     }
     // 🔁 완전자동을 켜면 [시작]을 따로 안 눌러도 바로 시작한다 (소싱·등록 세트 실행).
@@ -634,6 +634,20 @@ async function loadMoneyInputs() {
     if (m.autoLimit !== undefined) $('set-autolimit').value = m.autoLimit;
     $('set-autohunt').checked = !!m.autoHunt;
     $('set-solocsv').checked = !!m.soloNewToCsv;
+    $('set-forward').checked = m.forwardBuy === undefined ? true : !!m.forwardBuy;   // 낱개 사입(순방향) — 기본 켬
+    if (m.slotRate !== undefined) $('set-slotrate').value = m.slotRate;
+    // 2주 리뷰 기준: 구간 목록(10·30·50·70·100·150…500·600…1000)에서 고른다
+    const sel = $('set-reviewmin');
+    if (sel && !sel.options.length) {
+        const tiers = [10, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000];
+        for (const t of tiers) {
+            const o = document.createElement('option');
+            o.value = String(t);
+            o.textContent = t + '개 이상' + (t >= 1000 ? ' (메가급)' : t >= 100 ? ' (잘 팔림)' : t <= 10 ? ' (그래도 팔림)' : '');
+            sel.appendChild(o);
+        }
+    }
+    if (sel) sel.value = String(m.reviewMin || 10);
 }
 
 async function saveMoneyInputs() {
@@ -647,7 +661,10 @@ async function saveMoneyInputs() {
             targetProfit: Number($('set-target').value) || 1000,
             autoLimit: (isNaN(alv) || alv < 0) ? 10 : alv,
             autoHunt: $('set-autohunt').checked,
-            soloNewToCsv: $('set-solocsv').checked
+            soloNewToCsv: $('set-solocsv').checked,
+            forwardBuy: $('set-forward').checked,
+            slotRate: Math.min(100, Math.max(1, Number($('set-slotrate').value) || 15)),
+            reviewMin: Number($('set-reviewmin').value) || 10
         }
     });
 }
