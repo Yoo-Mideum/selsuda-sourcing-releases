@@ -1,19 +1,19 @@
 {
- "latest": "4.98",
- "note": "낱개 사입(순방향)·2주 리뷰·차단 감지·로그인 창 1회",
+ "latest": "4.99",
+ "note": "뷰셀·미니쌤 수강생도 로그인(명단 두 곳)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "a1e38cb145a4e06c000b24c3127e95d1a95b32a74b76f8a56ea0c144de5bf608",
+    "sha256": "90b4f980019f0793da5cd6367ec5d3f9d13c54b70483d7b7294411e8f66464ec",
     "size": 1175
    },
    {
     "path": "background.js",
-    "sha256": "7c7619f023d62083d023dfbe7d47046dda09be5432bfadf72bf954d1902030a6",
-    "size": 272610
+    "sha256": "e1dd0ca13e75aabd5f696aea63855bafb78d39e75b062fa97d44b11c93bd593b",
+    "size": 272769
    },
    {
     "path": "config.js",
@@ -22,13 +22,13 @@
    },
    {
     "path": "sidepanel.html",
-    "sha256": "47081bb90b0d32de2ac2ea47e3eef5491babb19cc742fb6ee2e5da958b86deba",
-    "size": 21151
+    "sha256": "974a981f98be227fffa60b5d93ff666c87525fd850ef3bae4af559c87445292b",
+    "size": 21275
    },
    {
     "path": "sidepanel.js",
-    "sha256": "76e94e982af60f3e1eb21e5e308ecdac30909608811b8251a48a53013547e8e6",
-    "size": 32392
+    "sha256": "3f0279cfdd9531e5b9d517b8b136b3e298a3ae43b4ec608831f4bd6dc710304b",
+    "size": 32595
    },
    {
     "path": "xlsx.full.min.js",
