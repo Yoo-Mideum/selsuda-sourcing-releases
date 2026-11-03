@@ -138,7 +138,9 @@ try {
             if ($h -eq ([string]$f.sha256).ToLower()) { $skipped++; $done++; Note '받는중' $here $j.latest $done $total ''; continue }
         }
         $to = Join-Path $tmp ($rel -replace '[\\/]', '_')
-        $src = $base + [uri]::EscapeDataString($rel)
+        # ★파일도 캐시를 피한다 — raw.githubusercontent 는 몇 분 캐시한다. version.json 만 피하면 "새 목록 + 옛 파일" 이 돼
+        #   "받은 파일이 깨졌습니다" 로 끝난다 (2026-11-04 실측: 올리고 1분 뒤 manifest.json 이 옛것으로 내려옴).
+        $src = $base + [uri]::EscapeDataString($rel) + '?t=' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         try {
             Invoke-WebRequest -Uri $src -OutFile $to -TimeoutSec 120 -UseBasicParsing
         } catch {
@@ -150,7 +152,7 @@ try {
         # 받은 것이 맞는 파일인지 확인 — 깨진 파일을 덮어쓰면 프로그램이 안 켜진다
         $gh = (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash.ToLower()
         if ($gh -ne ([string]$f.sha256).ToLower()) {
-            Say "받은 파일이 깨졌습니다: $rel"
+            Say ("받은 파일이 깨졌습니다: $rel (받은 것 " + $gh.Substring(0,8) + " / 목록 " + ([string]$f.sha256).ToLower().Substring(0,8) + ")")
             Note '실패' $here $j.latest $done $total ("받은 파일이 깨짐: $rel")
             Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
             exit 1
