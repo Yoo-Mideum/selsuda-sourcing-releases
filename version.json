@@ -1,34 +1,34 @@
 {
- "latest": "5.1",
- "note": "4대째 컴퓨터에서 로그인하면 제일 오래 안 쓴 컴퓨터를 자동으로 내보냅니다 (따로 지울 것 없음)",
+ "latest": "5.2",
+ "note": "새 버전 받는 중에 몇/몇(몇 %)과 다음 받는 시각이 보입니다",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "adda4228b0402fea87447d7737bede7b0ad183151a169aa1cdea57369bbb0ebf",
+    "sha256": "de1ad2a328e126185afecc4226afcbc0599baf43746d4a147325c0c10d94af8e",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "18eb861d29734663d93118cd7bb04813fa8ce7bb20ff68c8857c826ad849485e",
-    "size": 278667
+    "sha256": "ea7607f231e60bb2bed6050cae8dfc285d4c5a3487f228afe0568d023a78eef5",
+    "size": 279659
    },
    {
     "path": "config.js",
-    "sha256": "8abb3b6ca289382f6b354e9c31554983201a17029a26c9dec9c4f4df12f13749",
-    "size": 7119
+    "sha256": "43840dc37f059de4e024282ed4b679804bc57f6bc2f3c1ccefe69980af5b5f6d",
+    "size": 7615
    },
    {
     "path": "sidepanel.html",
-    "sha256": "974a981f98be227fffa60b5d93ff666c87525fd850ef3bae4af559c87445292b",
-    "size": 21275
+    "sha256": "72460c7eb26e8e4b074cf51c4cf2197896e7bdd7ed9e57f2ca640d863ab0bfcb",
+    "size": 21523
    },
    {
     "path": "sidepanel.js",
-    "sha256": "0e58418cbce90e2f57f0b378e4d592ec0dbc1c914e48eabbef7b04056c7948d5",
-    "size": 32951
+    "sha256": "bc330979c61d144504d1c303bfa61d2ffa8b1b9e6d7ab90a8d29f1e66a599a9e",
+    "size": 36033
    },
    {
     "path": "xlsx.full.min.js",
@@ -49,6 +49,11 @@
     "path": "icon128.png",
     "sha256": "8cfcb459156ef4f87db73183513eb106234f6d348b61d7456940f0756e811af4",
     "size": 5279
+   },
+   {
+    "path": "updater.ps1",
+    "sha256": "854811356e25a28f1d5f039e469d3bbadf1f708e8e4c1302e00e3f25ec1ed875",
+    "size": 11074
    }
   ]
  }

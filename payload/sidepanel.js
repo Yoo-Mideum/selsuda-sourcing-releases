@@ -61,6 +61,39 @@ document.addEventListener('DOMContentLoaded', async function () {
     }
 });
 
+// 새 버전 "받는 중" 의 진행 글. 업데이트기가 남긴 쪽지(u.prog)로 만든다. (v5.2, 루크: "몇 퍼센트인지 알아야")
+//   돌려주는 것: { text, pct }  pct 는 0~100 또는 null(모름)
+//   업데이트기는 1시간마다 한 번 돈다. 그래서 "받는 중" 의 대부분은 사실 "다음 차례를 기다리는 중" 이다 — 그걸 그대로 말한다.
+function updProgress(u, nowMs) {
+    const now = nowMs || Date.now();
+    const p = (u && u.prog) || null;
+    const hhmm = (ms) => { const d = new Date(ms); return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); };
+    const atOf = (s) => { const t = Date.parse(String(s || '').replace(' ', 'T')); return isNaN(t) ? 0 : t; };
+    const HOUR = 60 * 60 * 1000;
+    if (!p) {
+        return { pct: null, text: '업데이트기가 이 컴퓨터에서 돈 기록이 없어요. 설치파일로 깔았다면 1시간 안에 돌고, 그때 여기에 몇 % 인지 보입니다.\n바로 받으려면 아래 「직접 받기」로 새로 설치하세요.' };
+    }
+    const at = atOf(p.at);
+    const total = Number(p.total) || 0, done = Number(p.done) || 0;
+    if (p.stage === '받는중' || p.stage === '덮어쓰는중') {
+        if (at && now - at > 20 * 60 * 1000) {
+            return { pct: null, text: '받다가 멈춘 것 같아요 (' + hhmm(at) + ' 이후 소식 없음). 1시간 뒤 다시 해봅니다. 급하면 아래 「직접 받기」.' };
+        }
+        const pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+        return { pct: pct, text: (p.stage === '덮어쓰는중' ? '받은 파일을 넣는 중 ' : '받는 중 ') + done + '/' + total + ' (' + pct + '%)' };
+    }
+    if (p.stage === '실패') {
+        return { pct: null, text: '받다가 실패했어요' + (p.why ? ' — ' + p.why : '') + '. 1시간 뒤 다시 해봅니다 (마지막 ' + (at ? hhmm(at) : '?') + '). 급하면 아래 「직접 받기」.' };
+    }
+    // 확인 / 최신 / 대기 / 완료(옛것) — 아직 받기 전. 업데이트기는 1시간마다 돈다.
+    if (at && now - at > 75 * 60 * 1000) {
+        const h = Math.floor((now - at) / HOUR);
+        return { pct: null, text: '업데이트기가 ' + (h >= 1 ? h + '시간' : '1시간') + ' 넘게 안 돌았어요 (마지막 ' + hhmm(at) + '). 컴퓨터가 꺼져 있었다면 켜진 뒤 돕니다. 급하면 아래 「직접 받기」.' };
+    }
+    const next = at ? at + HOUR : 0;
+    return { pct: 0, text: '아직 받기 전이에요 (0%). 업데이트기는 1시간마다 봅니다 — 마지막 확인 ' + (at ? hhmm(at) : '?') + ', 다음은 ' + (next ? hhmm(next) : '?') + '쯤 받아요.\n받고 나면 크롬을 다시 켤 때 바뀝니다 — 그냥 쓰셔도 됩니다.' };
+}
+
 // 서버가 돌려준 code 를 사람 말로. (메시지를 주면 그걸 그대로 쓴다 — 서버가 더 정확하다)
 function failText(r) {
     if (r && r.message) return String(r.message);
@@ -455,13 +488,19 @@ function renderState(s) {
         const u = s.update;
         updCard.hidden = !u;
         if (u) {
+            const pr = u.ready ? null : updProgress(u);   // 받는 중: 몇/몇 (몇 %) · 다음 확인 시각 (v5.2)
             updText.innerText = u.ready
                 ? ('새 버전 ' + u.latest + ' 을 다 받았어요.'
                    + (u.note ? '\n' + u.note : '')
                    + '\n크롬을 다시 켜면 바뀝니다. 지금 바꾸려면 아래를 누르세요.')
-                : ('새 버전 ' + u.latest + ' 이 나왔어요. 받는 중입니다.'
+                : ('새 버전 ' + u.latest + ' 이 나왔어요.'
                    + (u.note ? '\n' + u.note : '')
-                   + '\n받고 나면 크롬을 다시 켤 때 바뀝니다 — 그냥 쓰셔도 됩니다.');
+                   + '\n' + pr.text);
+            const bar = $('upd-bar'), fill = $('upd-bar-fill');
+            if (bar && fill) {
+                bar.hidden = !(pr && pr.pct !== null);
+                if (pr && pr.pct !== null) fill.style.width = pr.pct + '%';
+            }
             if (updBtn) updBtn.hidden = !u.ready;
             // 자동 업데이트가 등록 안 된 PC 를 위한 대비 — 주소가 있을 때만 보여준다
             const link = $('upd-link'), a = $('upd-a');

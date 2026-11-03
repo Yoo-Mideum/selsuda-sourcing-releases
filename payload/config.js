@@ -135,6 +135,17 @@ async function fetchLatestVersion() {
 
 // 업데이트기가 폴더를 갈아놓고 남긴 쪽지. 없으면 null (= 아직 교체 안 됨)
 //  ★이 파일은 설치 때는 없고 업데이트기가 '새로' 만든다. 그래서 캐시에 걸리지 않는다.
+// 업데이트기의 진행 쪽지 (업데이트진행.json). 없으면 null = 업데이트기가 이 컴퓨터에서 돈 적이 없거나 옛 업데이트기. (v5.2)
+async function fetchUpdateProgress() {
+    try {
+        const url = chrome.runtime.getURL('업데이트진행.json');
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return null;
+        const j = await res.json();
+        return (j && j.stage) ? j : null;
+    } catch (e) { return null; }
+}
+
 async function fetchDiskVersion() {
     try {
         const url = chrome.runtime.getURL('디스크버전.json');

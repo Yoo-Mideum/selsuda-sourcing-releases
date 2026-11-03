@@ -363,12 +363,30 @@ async function maybeCheckUpdate() {
         if (verGreater(j.latest, running)) {
             // 아직 폴더는 안 갈렸다 = 업데이트기가 받는 중이거나 아직 돌 차례가 아니다
             //  url 은 자동 업데이트가 등록되지 않은 PC 를 위한 대비책(직접 받는 곳)
-            S.update = { latest: j.latest, ready: false, note: j.note || '', url: j.url || '' };
+            S.update = { latest: j.latest, ready: false, note: j.note || '', url: j.url || '',
+                         prog: await fetchUpdateProgress() };   // 몇/몇 받았는지 (v5.2)
         } else {
             S.update = null;
         }
         broadcast();
     } catch (e) { /* 업데이트 확인 실패가 프로그램을 막으면 안 된다 */ }
+}
+
+// 받는 중일 때는 진행 쪽지를 자주(5초) 다시 읽는다 — 패널이 "몇/몇 (몇 %)" 를 보이게. (v5.2)
+//  쪽지가 '완료' 가 되면 폴더가 갈린 것이니 바로 새 버전 확인으로 넘어간다.
+let _progAt = 0;
+async function refreshUpdateProgress() {
+    if (!S.update || S.update.ready) return;
+    const now = Date.now();
+    if (now - _progAt < 5000) return;
+    _progAt = now;
+    try {
+        const p = await fetchUpdateProgress();
+        const before = JSON.stringify(S.update.prog || null);
+        S.update.prog = p;
+        if (p && p.stage === '완료' && p.latest && verGreater(p.latest, appVer())) { S.updCheckedAt = 0; maybeCheckUpdate(); return; }
+        if (JSON.stringify(p || null) !== before) broadcast();
+    } catch (e) {}
 }
 
 // 패널의 [지금 적용]. 폴더가 갈렸으면 새로고침, 아직이면 왜 아직인지 알려준다.
@@ -614,6 +632,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'v2:getState') {
         S.lastStateAt = Date.now();            // 패널이 열려 있다는 표시 (업데이트 판단에 쓴다)
         maybeCheckUpdate();                    // 가끔 새 버전이 나왔는지 본다 (기다리지 않는다)
+        refreshUpdateProgress();               // 받는 중이면 몇/몇 받았는지 다시 읽는다 (v5.2)
         maybeRunFileOrder();                   // 실행지시 파일이 있으면 따른다 (기다리지 않는다)
         sendResponse({ ok: true, state: publicState() });
         return true;
