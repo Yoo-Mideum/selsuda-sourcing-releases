@@ -708,7 +708,7 @@ function expandSellRows(data, targetProfit) {
         const oneTitle = isSolo ? soloTitleOf(r.title)
             : ((r.linkQty === 1 && r.optionTitle) ? r.optionTitle
                 : String(r.title || '').replace(/,\s*\d{1,3}\s*개\s*$/, ', 1개'));
-        const oneUrl = (r.linkQty === 1 && r.optionUrl) ? r.optionUrl : (r.catalogUrl || '');
+        const oneUrl = qtyUrlOf(r, 1);
 
         out.push(Object.assign({}, r, {
             sellQty: 1,
@@ -726,7 +726,7 @@ function expandSellRows(data, targetProfit) {
         //  남이 있는 칸(경쟁) = '등록가능', 비어 있는 칸 = '빈수량신규'.
         //  예전의 "메인수량 행"과 "빈 수량 한 칸"은 이 안에 들어 있다.
         //  칸이 이미 최소 순이익(1,000원)을 넘긴 것만 담겨 있어 여기서 다시 거르지 않는다.
-        //  그룹상품으로 한 번에 올리므로, 몇 줄이 되든 카탈로그 주소는 같다.
+        //  주소는 칸마다 다르다 — 남이 있는 칸(경쟁)은 그 수량을 눌렀을 때의 주소, 빈 칸은 대표 주소. (v5.0)
         for (const s of (r.slots || [])) {
             if (!(s.qty > 1)) continue;
             const isMain = (s.basis === '경쟁' && Number(r.mainQty) === s.qty);
@@ -738,7 +738,7 @@ function expandSellRows(data, targetProfit) {
                 sellVerdict: s.basis === '경쟁' ? '등록가능' : '빈수량신규',
                 // 검색 카드가 곧 그 수량의 제목이면 그대로, 아니면 끝의 수량만 바꾼다
                 sellTitle: isMain ? (r.title || '') : qtyTitleOf(r.title, s.qty),
-                sellCatalogUrl: r.catalogUrl || ''
+                sellCatalogUrl: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || '')
             }));
         }
 
@@ -754,7 +754,7 @@ function expandSellRows(data, targetProfit) {
                 sellTitle: s.qty === 1
                     ? ((r.linkQty === 1 && r.optionTitle) ? r.optionTitle : qtyTitleOf(r.title, 1))
                     : qtyTitleOf(r.title, s.qty),
-                sellCatalogUrl: r.catalogUrl || '',
+                sellCatalogUrl: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || ''),
                 bestQty: 1, bestTotal: r.fwdUnitCost, unitCost: r.fwdUnitCost,
                 buyUrl: r.fwdLink || r.soloBuyLink || '',
                 buySeller: (r.fwdSeller || '') + ' (네이버 낱개)',
@@ -763,6 +763,18 @@ function expandSellRows(data, targetProfit) {
         }
     }
     return out;
+}
+
+// 그 수량 칸의 주소. (v5.0)
+//   ① 칸마다 눌러 받아 적은 것(qtyUrls) → ② 가장 적은 수량(optionUrl) → ③ 매입 묶음(buyUrl) → ④ 대표(카탈로그) 주소.
+//   옛 결과(qtyUrls 가 없는 것)도 ②③④ 로 예전과 같이 나온다.
+function qtyUrlOf(r, n) {
+    const q = Number(n);
+    const m = (r && r.qtyUrls) || {};
+    if (q > 0 && m[q]) return m[q];
+    if (q > 0 && q === Number(r.linkQty) && r.optionUrl) return r.optionUrl;
+    if (q > 0 && q === Number(r.bestQty) && r.buyUrl) return r.buyUrl;
+    return (r && r.catalogUrl) || '';
 }
 
 // 파일명에 못 쓰는 글자 제거
@@ -2280,6 +2292,61 @@ async function clickQtyAndInspect(wantQty, lowPrice) {
 }
 
 // ------------------------------------------------------------
+// 수량 칸마다 "그 수량이 눌린 상태의 주소" 를 읽는다. (v5.0, 루크 요청)
+//   ★실측(진단 파일): 수량 옵션은 <button role="radio" class="purchaseOptionFilter_btn_option…"> 라서
+//     href 가 없고, 누르면 주소가 바뀐다. 12개·11개·10개 묶음이 각각 다른 주소다.
+//   → 칸마다 눌러서 location.href 를 받아 적는다. 주소가 안 바뀌면 그 칸은 비워 둔다(대표 주소로 대신).
+//   옵션을 다 읽고 마진까지 계산한 "뒤에" 실행한다 — 이미 확보한 가격은 잃지 않는다.
+//   돌려주는 것: { 수량: 주소 } (못 받은 수량은 빠져 있다)
+// ------------------------------------------------------------
+async function clickQtysAndReadUrls(wantQtys) {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const QTY_RE = /^(\d{1,3})(개입|개|세트|팩|박스|입|병|캔|묶음)$/;
+    const SELECTOR = 'button, a, li, label, div, span, [role="button"], [role="radio"], [role="tab"]';
+
+    function qtyOfLine(line) {
+        const t = String(line || '').replace(/\([^)]*\)/g, '').replace(/\s+/g, '');
+        const m = t.match(QTY_RE);
+        return m ? Number(m[1]) : 0;
+    }
+    // clickQtyAndInspect 와 같은 규칙으로 "그 수량" 요소를 찾는다 (가장 안쪽 것)
+    function findTarget(wantQty) {
+        const hits = [];
+        for (const el of document.querySelectorAll(SELECTOR)) {
+            const raw = (el.innerText || '').trim();
+            if (!raw || raw.length > 55) continue;
+            const lines = raw.split('\n').map(s => s.trim()).filter(Boolean);
+            if (lines.length > 4) continue;
+            if (!lines.some(l => qtyOfLine(l) === wantQty)) continue;
+            hits.push(el);
+        }
+        if (!hits.length) return null;
+        return hits.filter(h => !hits.some(o => o !== h && h.contains(o)))[0] || hits[0];
+    }
+
+    const out = {};
+    for (const q0 of (wantQtys || [])) {
+        const q = Number(q0);
+        if (!(q > 0)) continue;
+        const target = findTarget(q);
+        if (!target) continue;
+        // 링크라면 클릭 없이 주소만
+        const anchor = target.closest('a');
+        if (anchor && anchor.href && anchor.href.indexOf('/catalog/') !== -1) { out[q] = anchor.href; continue; }
+        const before = location.href;
+        try { target.click(); } catch (e) { continue; }
+        let changed = false;
+        for (let i = 0; i < 20; i++) {              // 최대 3초, 보통 0.3초 안에 바뀐다
+            await sleep(150);
+            if (location.href !== before) { changed = true; break; }
+        }
+        if (changed) out[q] = location.href;
+        await sleep(300 + Math.random() * 300);
+    }
+    return out;
+}
+
+// ------------------------------------------------------------
 // [심화] 검색 결과의 카테고리 패널 읽기 (페이지 안에서 실행)
 //  "식품 30,363" 처럼 이름+상품수가 붙은 catId 링크만 골라낸다.
 //  패널이 접혀 있으면 "카테고리" 헤더를 눌러 펼치고 다시 읽는다.
@@ -3724,15 +3791,17 @@ function buildWorkOrder(results, money, risky) {
         if (!risky(r)) {
             const slots = [];
             // 1개 칸: 남이 있으면 기존 계산(basePrice), 없으면 낱개신규. 최소 순이익 미만이면 안 올린다.
+            // 주소: 남이 있는 칸은 그 수량을 눌렀을 때의 주소, 빈 칸은 대표 주소 (v5.0)
             if (r.soloNew && Number(r.soloProfit) >= MIN) {
-                slots.push({ 수량: 1, 제목: soloTitleOf(r.title), 판매가: r.soloPrice, 순이익: r.soloProfit, 근거: '빈칸', 경쟁가: '' });
+                slots.push({ 수량: 1, 제목: soloTitleOf(r.title), 판매가: r.soloPrice, 순이익: r.soloProfit, 근거: '빈칸', 경쟁가: '', 주소: r.catalogUrl || '' });
             } else if (String(r.verdict) === '등록가능' && Number(r.profit) >= MIN) {
-                slots.push({ 수량: 1, 제목: oneTitleOf(r), 판매가: r.basePrice, 순이익: r.profit, 근거: '경쟁', 경쟁가: r.basePrice + 10 });
+                slots.push({ 수량: 1, 제목: oneTitleOf(r), 판매가: r.basePrice, 순이익: r.profit, 근거: '경쟁', 경쟁가: r.basePrice + 10, 주소: qtyUrlOf(r, 1) });
             }
             for (const s of (r.slots || [])) {
                 const isMain = (s.basis === '경쟁' && Number(r.mainQty) === s.qty);
                 slots.push({ 수량: s.qty, 제목: isMain ? (r.title || '') : qtyTitleOf(r.title, s.qty),
-                             판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '' });
+                             판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '',
+                             주소: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || '') });
             }
             if (slots.length) items.push(mk(r, {
                 경로: '묶음', 매입처: r.buySeller || '', 옵션URL: r.buyUrl || '',
@@ -3745,7 +3814,8 @@ function buildWorkOrder(results, money, risky) {
         if (f.length && !r.notOfficial && !r.fwdStatus) {
             const slots2 = f.map(s => ({
                 수량: s.qty, 제목: s.qty === 1 ? oneTitleOf(r) : qtyTitleOf(r.title, s.qty),
-                판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || ''
+                판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '',
+                주소: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || '')
             }));
             items.push(mk(r, {
                 경로: '낱개', 매입처: r.fwdSeller || '', 옵션URL: r.fwdLink || r.soloBuyLink || '',
@@ -4371,6 +4441,35 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                         });
                     }
                 } catch (e) { console.debug('[옵션 주소] 실패:', e.message); }
+
+                // 3) 옵션이 있는 수량마다 "그 수량이 눌린 상태의 주소" 를 받아 적는다. (v5.0)
+                //    ★실측(루크 11-04): 12개·11개·10개 묶음은 각각 주소가 다른데 엑셀엔 전부 대표 주소로 적혔다.
+                //    이미 아는 것(매입 묶음 = buyUrl, 가장 적은 수량 = optionUrl)은 다시 안 누른다.
+                //    경쟁 칸(남이 있는 칸)만 이 주소가 필요하고, 그 칸은 전부 옵션이 있으므로 옵션 수량 전부를 본다.
+                try {
+                    const known = {};
+                    if (cat.bestQty && cat.buyUrl) known[Number(cat.bestQty)] = cat.buyUrl;
+                    if (cat.linkQty && cat.optionUrl) known[Number(cat.linkQty)] = cat.optionUrl;
+                    const want = [];
+                    for (const o of (cat.cleanOptions || cat.options || [])) {
+                        const q = Number(o.qty);
+                        if (!(q > 0) || known[q] || want.indexOf(q) !== -1) continue;
+                        want.push(q);
+                    }
+                    cat.qtyUrls = Object.assign({}, known);
+                    if (want.length) {
+                        const w = await chrome.scripting.executeScript({
+                            target: { tabId: tabId },
+                            func: clickQtysAndReadUrls,
+                            args: [want]
+                        });
+                        const gotW = (w && w[0] && w[0].result) || {};
+                        let n = 0;
+                        for (const q of want) if (gotW[q]) { cat.qtyUrls[q] = gotW[q]; n++; }
+                        if (n < want.length) console.debug('[수량 칸 주소] 못 받은 수량:', want.filter(q => !gotW[q]).join(','), cat.title);
+                        await restSleep(rand(500, 1000));
+                    }
+                } catch (e) { console.debug('[수량 칸 주소] 실패:', e.message); }
 
                 // [매입처 판매 여부 확인] 등록 후보 상품만, 매입처 상품 페이지를
                 // 실제로 열어 판매중단/품절 문구를 확인한다. 표시만 하고 제외하지 않는다.

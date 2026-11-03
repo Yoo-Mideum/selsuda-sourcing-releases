@@ -1,19 +1,19 @@
 {
- "latest": "4.99",
- "note": "뷰셀·미니쌤 수강생도 로그인(명단 두 곳)",
+ "latest": "5.0",
+ "note": "수량 칸마다 그 묶음을 눌렀을 때의 주소(12개·11개·10개 각각)를 적습니다",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "90b4f980019f0793da5cd6367ec5d3f9d13c54b70483d7b7294411e8f66464ec",
-    "size": 1175
+    "sha256": "d645f439d580b592de61ed445cf953791e0230219fd7e825d235b8776f0cc361",
+    "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "e1dd0ca13e75aabd5f696aea63855bafb78d39e75b062fa97d44b11c93bd593b",
-    "size": 272769
+    "sha256": "7923d2c4d362e80607ce90723053ac97f851603c4bfa0246d1ff1b35d4165aa5",
+    "size": 278613
    },
    {
     "path": "config.js",
