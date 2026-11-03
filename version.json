@@ -1,19 +1,19 @@
 {
- "latest": "5.3",
- "note": "자동 업데이트 시험판 — 바뀐 것은 없습니다 (진행률이 보이는지 보는 용도)",
+ "latest": "5.4",
+ "note": "크롬을 다시 켜면 하던 작업부터 이어갑니다 (작업 창 2개 안 뜸)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "35be538683837bffeecb13d17d71851dad36b3d06606c7b72738a76af2540319",
+    "sha256": "5a80b9efc94ef7841ded39a274d12078f6ac6e1a4ea28ce57b2413dac86bd8b0",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "ea7607f231e60bb2bed6050cae8dfc285d4c5a3487f228afe0568d023a78eef5",
-    "size": 279659
+    "sha256": "cea89934da7d3e1a3f7525ba3bf652486bd84f8ff4bf88af6b976bc31f2a5be4",
+    "size": 283633
    },
    {
     "path": "config.js",

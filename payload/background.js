@@ -419,7 +419,12 @@ async function persist() {
         });
         trimCatStat();   // 카테고리 성적이 너무 불어나지 않게 정리하고 저장한다
         await chrome.storage.local.set({
-            v2queue: { queue: S.queue, done: S.done, pending: S.pending, autoAdded: S.autoAdded, deepAdded: S.deepAdded, nextTargets: S.nextTargets, runStamp: S.runStamp, runRound: S.runRound, runHits: S.runHits, runActiveMs: S.runActiveMs, skipN: S.skipN, catStat: S.catStat },
+            v2queue: { queue: S.queue, done: S.done, pending: S.pending, autoAdded: S.autoAdded, deepAdded: S.deepAdded, nextTargets: S.nextTargets, runStamp: S.runStamp, runRound: S.runRound, runHits: S.runHits, runActiveMs: S.runActiveMs, skipN: S.skipN, catStat: S.catStat,
+                       // (v5.4) 다시 켜질 때 "하던 작업부터" 이어가기 위한 것들
+                       current: S.current ? String(S.current.keyword || '') : '',   // 하고 있던 키워드 (죽으면 대기줄 맨 앞으로 되돌린다)
+                       workerTabId: S.workerTabId || null,                           // 작업 창 — 같은 창을 다시 쓴다 (2개 뜨는 것 방지)
+                       userStopped: !!S.userStopped,                                 // 사람이 [중지]를 눌러 멈춘 판은 저절로 되살리지 않는다
+                       haltedFor: S.haltedFor || '', haltAt: _haltAt || 0 },        // 로그인·회원 멈춤은 5분 간격 규칙을 다시 켜져도 지킨다
             v2results: { results: slim, failures: S.failures }
         });
     } catch (e) { console.error('[저장] 실패:', e); }
@@ -442,10 +447,28 @@ async function persist() {
             S.runActiveMs = st.v2queue.runActiveMs || 0;
             S.skipN = Object.assign(newSkipN(), st.v2queue.skipN || {});
             S.catStat = st.v2queue.catStat || {};
+            // (v5.4) 하던 키워드는 대기줄 맨 앞으로 — 검색하다 죽은 키워드가 사라지지 않게
+            const cur = String(st.v2queue.current || '');
+            if (cur && !S.queue.some(k => bareKw(k) === bareKw(cur))) S.queue.unshift(cur);
+            S.workerTabId = st.v2queue.workerTabId || null;   // 살아 있으면 그 창을 다시 쓴다 (ensureWorkerTab 이 확인)
+            S.userStopped = !!st.v2queue.userStopped;
+            S.haltedFor = st.v2queue.haltedFor || '';
+            _haltAt = Number(st.v2queue.haltAt) || 0;
         }
         if (st.v2results) {
             S.results = st.v2results.results || [];
             S.failures = st.v2results.failures || [];
+        }
+    } catch (e) {}
+
+    // ★(v5.4, 루크) 다시 켜지면 하던 작업부터 이어간다.
+    //   크롬을 다시 켰거나(업데이트 뒤 포함), 크롬이 확장의 뒷일꾼(서비스워커)을 중간에 꺼 버렸을 때
+    //   예전엔 대기줄만 남고 가만히 있었다 — 사람이 [시작]을 다시 눌러야 했고, 그때 작업 창이 하나 더 생겼다.
+    //   사람이 [중지]로 멈춘 판은 그대로 둔다. 로그인·회원 멈춤은 5분 규칙(ensureWorker)이 지킨다.
+    try {
+        if (!S.userStopped && (S.queue.length > 0 || S.pending.length > 0)) {
+            S.note = '다시 켜져서 하던 작업을 이어갑니다...';
+            setTimeout(() => { try { ensureWorker(); } catch (_) {} }, 4000);
         }
     } catch (e) {}
 })();
@@ -4768,6 +4791,7 @@ async function workerLoop() {
     } catch (_) { }
     coordHbStart();   // 🔁 판 도는 동안 '나 소싱 살아있음' 을 알린다
     S.stopRequested = false;
+    S.userStopped = false;   // 판이 돌기 시작했다 = 멈춘 상태가 아니다 (다시 켜지면 이어간다)
     S.lastError = '';
     broadcast();
 
@@ -4935,6 +4959,7 @@ async function workerLoop() {
             try { await chrome.tabs.remove(S.workerTabId); } catch (e) {}
             S.workerTabId = null;
         }
+        if (wasStopped) S.userStopped = true;   // [중지]로 멈춘 판 — 다시 켜져도 저절로 되살리지 않는다
         await persist();
         broadcast();
         // [완전 자동] 위에서 다음 판이 태워졌으면 잠시 숨 고르고 스스로 재시작
@@ -5068,6 +5093,29 @@ async function maybeRunFileOrder() {
         let added = 0;
         for (const k of kws) if (!S.queue.includes(k)) { S.queue.push(k); added++; }
         if (added) did.push('키워드 ' + added + '개 추가: ' + kws.join(', ') + (S.noTail ? ' (꼬리물기 끔)' : ''));
+        // (v5.4) "완전자동": 설정의 🤖 완전 자동을 켜거나 끈다. "사냥감": 다음 추적할 키워드에 넣는다(10개씩 판을 나눠 돈다).
+        //   새로 깐 확장(저장이 빈 것)에 옛 다음사냥감 파일의 키워드를 되살릴 때 쓴다.
+        if (j.완전자동 === true || j.완전자동 === false) {
+            const sm = await chrome.storage.local.get('money');
+            const m = sm.money || {};
+            m.autoHunt = j.완전자동;
+            await chrome.storage.local.set({ money: m });
+            did.push('완전 자동 ' + (j.완전자동 ? '켬' : '끔'));
+        }
+        const hunts = Array.isArray(j.사냥감) ? j.사냥감.map(x => String(x).trim()).filter(Boolean) : [];
+        if (hunts.length) {
+            const known = new Set([].concat(S.queue, S.nextTargets).map(k => bareKw(k)));
+            for (const d of S.done) known.add(bareKw(d.keyword));
+            if (S.current) known.add(bareKw(S.current.keyword));
+            let n = 0;
+            for (const k of hunts) { const bk = bareKw(k); if (!bk || known.has(bk)) continue; known.add(bk); S.nextTargets.push(k); n++; }
+            did.push('다음 사냥감 ' + n + '개 추가 (전체 ' + S.nextTargets.length + '개)');
+            // 쉬고 있고 완전 자동이면 첫 판(10개)을 바로 태운다
+            if (n && !added && !S.queue.length && !S.pending.length && !S.running && (await loadMoney()).autoHunt) {
+                const moved = await boardNextTargets();
+                if (moved) { did.push('첫 판 ' + moved + '개 태움'); added += moved; }
+            }
+        }
         await persist(); broadcast();
         await fileOrderNote('[' + j.id + '] ' + appVer() + ' · ' + (did.join(' / ') || '할 것 없음'));
         if (added) {
