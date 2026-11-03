@@ -1,13 +1,13 @@
 {
- "latest": "5.2",
- "note": "새 버전 받는 중에 몇/몇(몇 %)과 다음 받는 시각이 보입니다",
+ "latest": "5.3",
+ "note": "자동 업데이트 시험판 — 바뀐 것은 없습니다 (진행률이 보이는지 보는 용도)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "de1ad2a328e126185afecc4226afcbc0599baf43746d4a147325c0c10d94af8e",
+    "sha256": "35be538683837bffeecb13d17d71851dad36b3d06606c7b72738a76af2540319",
     "size": 1174
    },
    {
