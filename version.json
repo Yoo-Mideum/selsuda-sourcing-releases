@@ -1,19 +1,19 @@
 {
- "latest": "5.0",
- "note": "수량 칸마다 그 묶음을 눌렀을 때의 주소(12개·11개·10개 각각)를 적습니다",
+ "latest": "5.1",
+ "note": "4대째 컴퓨터에서 로그인하면 제일 오래 안 쓴 컴퓨터를 자동으로 내보냅니다 (따로 지울 것 없음)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "d645f439d580b592de61ed445cf953791e0230219fd7e825d235b8776f0cc361",
+    "sha256": "adda4228b0402fea87447d7737bede7b0ad183151a169aa1cdea57369bbb0ebf",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "7923d2c4d362e80607ce90723053ac97f851603c4bfa0246d1ff1b35d4165aa5",
-    "size": 278613
+    "sha256": "18eb861d29734663d93118cd7bb04813fa8ce7bb20ff68c8857c826ad849485e",
+    "size": 278667
    },
    {
     "path": "config.js",
@@ -27,8 +27,8 @@
    },
    {
     "path": "sidepanel.js",
-    "sha256": "3f0279cfdd9531e5b9d517b8b136b3e298a3ae43b4ec608831f4bd6dc710304b",
-    "size": 32595
+    "sha256": "0e58418cbce90e2f57f0b378e4d592ec0dbc1c914e48eabbef7b04056c7948d5",
+    "size": 32951
    },
    {
     "path": "xlsx.full.min.js",

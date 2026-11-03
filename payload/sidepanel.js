@@ -69,7 +69,7 @@ function failText(r) {
         'NO_PW': '아직 비밀번호가 없어요. 루크 수강생은 상담 예약 페이지에서, 뷰셀·미니쌤 수강생은 뷰셀 앱에서 비밀번호를 먼저 정해주세요.',
         'BAD_PW': '비밀번호가 맞지 않아요.',
         'BLOCKED': '사용이 멈춰 있어요. 강사에게 문의해주세요.',
-        'IP_FULL': '등록된 컴퓨터가 3대를 넘었어요. 안 쓰는 것을 지운 뒤 다시 해주세요.',
+        'IP_FULL': '다른 컴퓨터에서 로그인해서 이 컴퓨터가 빠졌어요. 다시 로그인하면 이 컴퓨터가 들어오고, 제일 오래 안 쓴 컴퓨터 하나가 빠져요.',
         'BAD_TOKEN': '다시 로그인해주세요.',
         'NO_SIGNUP': '이 프로그램에서는 가입할 수 없어요. 루크 수강생은 상담 예약 페이지에서, 뷰셀·미니쌤 수강생은 뷰셀 앱에서 가입해주세요.',
         'EMPTY': '전화번호와 비밀번호를 넣어주세요.',
@@ -117,7 +117,7 @@ async function doLogin() {
             await chrome.storage.local.set({ member });
             $('login-pw').value = '';    // 화면에 비밀번호를 남겨두지 않는다
             setMsg('login-msg', '', '');
-            enterMain(member);
+            enterMain(member, r.notice || '');   // 4대째라 오래 안 쓴 컴퓨터를 내보냈으면 그 말을 보여준다
         } else {
             setMsg('login-msg', 'err', failText(r));
         }
@@ -127,13 +127,17 @@ async function doLogin() {
     $('btn-login').disabled = false;
 }
 
-function enterMain(member) {
+function enterMain(member, notice) {
     showView('view-main');
     $('member-name').innerText = member.name || member.nick || '회원';
 
-    // 사용기간(N일) 개념은 없어졌다 — 명단에 있고 멈춰 있지 않으면 쓴다
+    // 사용기간(N일) 개념은 없어졌다 — 명단에 있고 멈춰 있지 않으면 쓴다.
+    // 이 띠는 서버가 보낸 한 줄 알림(컴퓨터 교체)에만 쓴다.
     const banner = $('days-banner');
-    if (banner) banner.hidden = true;
+    if (banner) {
+        banner.hidden = !notice;
+        banner.innerText = notice ? ('🖥️ ' + notice) : '';
+    }
 
     refreshNaver();
     requestState();
