@@ -1,19 +1,19 @@
 {
- "latest": "5.4",
- "note": "크롬을 다시 켜면 하던 작업부터 이어갑니다 (작업 창 2개 안 뜸)",
+ "latest": "5.5",
+ "note": "엑셀 맨 앞에 등록용 시트(주소·수량·판매가를 B·C·D에, 파랑=등록가능·녹색=신규·노랑=확인·빨강=PASS)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "5a80b9efc94ef7841ded39a274d12078f6ac6e1a4ea28ce57b2413dac86bd8b0",
+    "sha256": "3d0a305e2ae71de6aa151719825bcedb643a1ff6840a41e33302e7ab04d24947",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "cea89934da7d3e1a3f7525ba3bf652486bd84f8ff4bf88af6b976bc31f2a5be4",
-    "size": 283633
+    "sha256": "f23ba76ceb36f7c9622727fe3dcc031a4a44a19b4eb970806a278a921ea802ff",
+    "size": 292315
    },
    {
     "path": "config.js",

@@ -3270,6 +3270,102 @@ function fwdCell(r) {
     return '';
 }
 
+// ────────────────────────────────────────────────────────────
+// [등록용 시트] (v5.5, 루크 요청 2026-11-06)
+//  엑셀 맨 앞 시트. 자동등록 리스트업에 "주소 · 수량 · 판매가" 를 긁어 붙이는 용도라
+//  그 세 칸을 B·C·D 에 붙여 두고(A 는 사람이 알아보는 카탈로그명), 그 뒤에 마진과 매입 상세를 둔다.
+//  줄은 세 묶음으로 나뉜다 — ① 바로 올릴 것  ② 확인하고 올릴 것  ③ 올리지 않음(PASS·역마진).
+//  색: 파랑 = 남이 있는 칸(등록가능) · 녹색 = 아무도 없는 새 칸(신규) · 노랑 = 확인 필요 · 빨강 = PASS·역마진.
+//  값은 전체 시트와 같은 행(expandSellRows)에서 나온다 — 따로 계산하지 않는다.
+const REG_HEADERS = [
+    '카탈로그명', '카탈로그 주소', '수량', '판매가', '마진(1건 순이익)', '마진율(%)',
+    '판정', '칸 근거',
+    '매입수량', '매입총액', '개당원가', '매입처', '매입 주소', '매입상태',
+    '신뢰도', '2주리뷰', '사입길', '검색키워드', '수집시각'
+];
+const REG_MONEY_COLS = [3, 4, 9, 10];      // 판매가, 마진, 매입총액, 개당원가
+// 제목 줄 메모 — 칸에 마우스를 대면 보인다. "이 칸이 뭔지" 만 적는다.
+const REG_NOTES = {
+    0: '카탈로그 이름. 끝의 ", N개" 가 올릴 수량입니다. 자동등록에 넣지 않아도 됩니다(자동등록이 카탈로그에서 읽습니다).',
+    1: '자동등록 「리스트업」 첫 칸에 붙여넣는 주소.\nB·C·D 세 칸을 한꺼번에 긁어 붙이면 수량·판매가까지 같이 들어갑니다.\n남이 있는 칸은 그 수량을 눌렀을 때의 주소, 새로 만드는 칸은 대표 주소입니다.',
+    2: '몇 개짜리로 올릴지(판매 수량). 1 = 낱개.',
+    3: '올릴 판매가.\n파랑(남이 있는 칸) = 남의 값 − 10원.\n녹색(빈 칸) = 목표 순이익이 그대로 남는 값. 목표 순이익 = 개당원가 × 수량 × 15%(설정), 최소 1,000원 · 최대 10,000원.\n더 큰 묶음보다 비싸지는 칸은 뺐습니다.',
+    4: '1건 팔았을 때 남는 돈 = 판매가 − 수수료 − 개당원가×수량 − 택배비.',
+    5: '마진 ÷ (개당원가 × 수량). 원가 대비 몇 % 남는지.',
+    6: '파랑 = 등록가능(남이 있는 칸). 녹색 = 신규(아무도 없는 칸). 노랑 = 확인 필요. 빨강 = PASS·역마진.',
+    7: '그 칸의 가격을 어떻게 정했는지.',
+    8: '매입처에서 한 번에 사는 묶음 수량.',
+    9: '그 묶음 값(배송비 포함).',
+    10: '매입총액 ÷ 매입수량 = 1개 원가.',
+    11: '어디서 사는지(최저가 판매처).',
+    12: '사러 가는 주소(그 묶음이 선택된 상태).',
+    16: '묶음(역방향) = 묶음을 사서 나눠 판다. 낱개(순방향) = 네이버 공식몰에서 1개를 실제 매입가로 산다.'
+};
+const REG_DIVIDERS = {
+    check: '▼ 확인하고 올릴 것 (신뢰도 확인필요 · 판매중단 의심 · 조금 남음)',
+    pass:  '▼ 올리지 않음 (PASS · 역마진 · 옵션 없음)'
+};
+
+// 이 행의 칸 근거 — 남이 있는 칸(경쟁)인지 아무도 없는 칸(빈칸)인지
+function regBasisOf(r) {
+    const v = String(r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '';
+    if (/등록가능/.test(v)) return '경쟁';
+    if (/신규/.test(v)) return '빈칸';
+    return '';
+}
+
+// 등록용 시트의 행(aoa)과 행마다의 종류(kinds). rankOf = 전체 시트와 같은 순위 함수.
+//  kinds: head / ok(파랑) / new(녹색) / check(노랑) / pass(빨강) / div(구분줄) / gap(빈 줄)
+function buildRegSheetAoa(rows, rankOf) {
+    const numOr = (v) => {
+        if (v === '' || v === undefined || v === null) return '';
+        const n = Number(v);
+        return isNaN(n) ? String(v) : n;
+    };
+    const basisText = (r) => {
+        const b = regBasisOf(r);
+        if (b === '경쟁') return '남이 있는 칸 (남의 값 −10원)';
+        if (b === '빈칸') return '빈 칸 (목표 순이익으로 새로 정함)';
+        return '';
+    };
+    const line = (r) => [
+        (r.sellTitle !== undefined ? r.sellTitle : r.title) || '',
+        (r.sellCatalogUrl !== undefined ? r.sellCatalogUrl : r.catalogUrl) || '',
+        numOr(r.sellQty !== undefined ? r.sellQty : 1),
+        numOr(r.sellPrice !== undefined ? r.sellPrice : r.basePrice),
+        numOr(r.sellProfit !== undefined ? r.sellProfit : r.profit),
+        numOr(r.sellCostRate !== undefined ? r.sellCostRate : r.costRate),
+        (r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '',
+        basisText(r),
+        numOr(r.bestQty), numOr(r.bestTotal), numOr(r.unitCost),
+        r.buySeller || '', r.buyUrl || '', r.buyStatus || '',
+        r.confidence || '',
+        numOr(r.reviewRecent),
+        isFwdRow(r) ? '낱개(순방향)' : '묶음(역방향)',
+        r.searchKeyword || '',
+        r.scrapedAt || ''
+    ];
+    const sec = { go: [], check: [], pass: [] };
+    for (const r of rows) {
+        const k = rankOf(r);
+        if (k === 0 || k === 3) sec.go.push(r);
+        else if (k <= 5) sec.check.push(r);
+        else sec.pass.push(r);
+    }
+    const aoa = [REG_HEADERS.slice()], kinds = ['head'];
+    for (const r of sec.go) { aoa.push(line(r)); kinds.push(regBasisOf(r) === '빈칸' ? 'new' : 'ok'); }
+    const blank = () => { aoa.push(['']); kinds.push('gap'); };
+    if (sec.check.length) {
+        blank(); aoa.push([REG_DIVIDERS.check]); kinds.push('div');
+        for (const r of sec.check) { aoa.push(line(r)); kinds.push('check'); }
+    }
+    if (sec.pass.length) {
+        blank(); aoa.push([REG_DIVIDERS.pass]); kinds.push('div');
+        for (const r of sec.pass) { aoa.push(line(r)); kinds.push('pass'); }
+    }
+    return { aoa: aoa, kinds: kinds, counts: { go: sec.go.length, check: sec.check.length, pass: sec.pass.length } };
+}
+
 function makeSheet(data) {
     const aoa = buildSheetAoa(data);
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -3310,6 +3406,49 @@ function makeSheet(data) {
     return ws;
 }
 
+
+// 등록용 시트를 실제 엑셀 시트로 — 색·메모·너비. (v5.5)
+function makeRegSheet(rows, rankOf) {
+    const built = buildRegSheetAoa(rows, rankOf);
+    const aoa = built.aoa, kinds = built.kinds;
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [
+        { wch: 46 }, { wch: 14 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 9 },
+        { wch: 14 }, { wch: 26 },
+        { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 13 },
+        { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 14 }
+    ];
+    const FILL = {
+        head: 'E2EFDA', copy: 'BDD7EE',          // 제목 줄 / 복사하는 세 칸(B·C·D)의 제목
+        ok: 'DDEBF7', new: 'C6EFCE', check: 'FFF2CC', pass: 'FFC7CE', div: 'D9D9D9'
+    };
+    const nCols = REG_HEADERS.length;
+    const style = (fill, extra) => Object.assign({ fill: { patternType: 'solid', fgColor: { rgb: fill } } }, extra || {});
+    for (let R = 0; R < aoa.length; R++) {
+        const kind = kinds[R];
+        if (kind === 'gap') continue;
+        for (let C = 0; C < nCols; C++) {
+            const ref = XLSX.utils.encode_cell({ r: R, c: C });
+            let cell = ws[ref];
+            if (!cell) { cell = ws[ref] = { t: 's', v: '' }; }   // 빈 칸에도 색을 입히려면 칸이 있어야 한다
+            if (kind === 'head') {
+                const isCopy = (C >= 1 && C <= 3);
+                cell.s = style(isCopy ? FILL.copy : FILL.head, { font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' } });
+                if (REG_NOTES[C]) cell.c = [{ a: '셀수다 소싱', t: REG_NOTES[C] }];
+            } else if (kind === 'div') {
+                cell.s = style(FILL.div, { font: { bold: true } });
+            } else {
+                cell.s = style(FILL[kind] || 'FFFFFF');
+                if (REG_MONEY_COLS.indexOf(C) >= 0 && cell.t === 'n') cell.z = '#,##0';
+            }
+        }
+    }
+    // 복사 세 칸의 제목에 "어디에 붙이는지" 를 한 번 더
+    const b1 = ws['B1']; if (b1) b1.v = '카탈로그 주소 (자동등록에 붙여넣기 →)';
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, aoa.length - 1), c: nCols - 1 } });
+    return ws;
+}
+
 // 저장해 둔 결과 파일을 디스크에서 지운다(기록 비우기 때 다음사냥감 등 정리용). (v4.90)
 async function eraseSavedFile(nameRegex) {
     try {
@@ -3336,6 +3475,8 @@ async function saveWorkbook(sheets, filename, overwrite) {
         if (s.aoa) {                                   // 단순 목록 시트 ("다음 사냥감", "카테고리 성적")
             ws = XLSX.utils.aoa_to_sheet(s.aoa);
             ws['!cols'] = s.cols || [{ wch: 44 }];
+        } else if (s.reg) {                            // 등록용 시트 (v5.5) — 복사 칸 앞으로, 색 구분
+            ws = makeRegSheet(s.data, s.rankOf);
         } else {
             ws = makeSheet(s.data);
         }
@@ -3703,7 +3844,8 @@ async function exportAll() {
 
     // 파일 1개 안에 [전체] 시트 + 키워드별 시트를 넣는다 (키워드 시트도 같은 순위로)
     const kwOrder = [...orderOf.keys()];
-    const sheets = [{ name: '전체', data: sorted }];
+    // 「등록용」 이 맨 앞 (v5.5, 루크): 자동등록에 붙여넣는 주소·수량·판매가가 B·C·D 에 모여 있고 색으로 구분된다.
+    const sheets = [{ name: '등록용', reg: true, data: sorted, rankOf: rankOf }, { name: '전체', data: sorted }];
     // 두 길을 시트로 나눈다 (루크 요청 2026-11-02): 묶음 사입(역방향) / 낱개 사입(순방향). 전체 시트에도 "사입길" 열로 표시된다.
     sheets.push({ name: '묶음사입(역방향)', data: sorted.filter(r => !isFwdRow(r)) });
     sheets.push({ name: '낱개사입(순방향)', data: sorted.filter(r => isFwdRow(r)) });
