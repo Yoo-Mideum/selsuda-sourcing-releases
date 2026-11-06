@@ -1,19 +1,19 @@
 {
- "latest": "5.5",
- "note": "엑셀 맨 앞에 등록용 시트(주소·수량·판매가를 B·C·D에, 파랑=등록가능·녹색=신규·노랑=확인·빨강=PASS)",
+ "latest": "5.6",
+ "note": "등록용 시트 안내 정정: A~D 네 칸(카탈로그명·주소·수량·판매가)을 긁어 자동등록 표 첫 칸에 붙여넣기",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "3d0a305e2ae71de6aa151719825bcedb643a1ff6840a41e33302e7ab04d24947",
+    "sha256": "466eb9f43e946c6d5b2951db9d7a571779973c3734e38601ba13d1b0f84eaf78",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "f23ba76ceb36f7c9622727fe3dcc031a4a44a19b4eb970806a278a921ea802ff",
-    "size": 292315
+    "sha256": "b236ea0b925ceaad23cbe73d50e1e24096a58c8a2a8fe44dc30e6766d5c319b5",
+    "size": 292447
    },
    {
     "path": "config.js",
