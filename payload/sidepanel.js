@@ -330,6 +330,16 @@ function bindMainEvents() {
     $('btn-stop').addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'v2:stop' }, () => { if (chrome.runtime.lastError) {} });
     });
+    $('btn-kill').addEventListener('click', () => {   // ⛔ 무조건 바로 (v5.7)
+        $('btn-kill').disabled = true;
+        $('btn-kill').innerText = '⛔ 종료하는 중...';
+        chrome.runtime.sendMessage({ action: 'v2:kill' }, () => {
+            if (chrome.runtime.lastError) {}
+            $('btn-kill').disabled = false;
+            $('btn-kill').innerText = '⛔ 강제 종료 (바로 멈춤)';
+            setMsg('run-error', 'ok', '⛔ 바로 멈췄어요. 보던 키워드는 대기줄 맨 앞에, 결과는 저장돼 있어요. [▶ 시작]을 누르면 이어서 봐요.');
+        });
+    });
     $('btn-csv').addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'v2:exportCsv' }, (res) => {
             if (chrome.runtime.lastError) return;

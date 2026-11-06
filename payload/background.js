@@ -599,6 +599,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'v2:start') {
+        if (_loopAlive && !S.running) {   // 강제 종료 직후 — 옛 판이 아직 정리 중 (길어야 몇 초)
+            S.lastError = '방금 강제 종료한 판을 정리하는 중입니다. 몇 초 뒤 [▶ 시작]을 다시 눌러 주세요.';
+            broadcast();
+            sendResponse({ ok: false });
+            return true;
+        }
         S.haltedFor = '';      // 사람이 [시작]을 눌렀다 — 멈춤 상태를 풀고 바로 본다
         ensureWorker(true);
         sendResponse({ ok: true });
@@ -615,6 +621,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
         }
         sendResponse({ ok: true });
+        return true;
+    }
+    if (request.action === 'v2:kill') {
+        // ⛔ 강제 종료 — 무조건 그 자리에서 끝낸다 (v5.7, 루크)
+        forceKill().then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }));
         return true;
     }
     if (request.action === 'v2:clearNext') {
@@ -1077,6 +1088,20 @@ function injectModal() {
         chrome.runtime.sendMessage({ action: 'v2:stop' });
     };
 
+    // ⛔ 강제 종료 — [중지하기]는 읽던 카탈로그를 마무리하지만, 이것은 그 자리에서 끝낸다 (v5.7)
+    const killBtn = document.createElement('button');
+    killBtn.id = 'ext-v2-kill';
+    killBtn.innerText = '⛔ 강제 종료 (바로 멈춤)';
+    killBtn.style.cssText = [
+        'width: 100%; padding: 9px 0; border: none; border-radius: 12px; cursor: pointer; margin-top: 6px;',
+        'background: #C62828; color: #fff; font-weight: 800; font-size: 13px;'
+    ].join(' ');
+    killBtn.onclick = function () {
+        killBtn.innerText = '종료하는 중...';
+        killBtn.disabled = true;
+        chrome.runtime.sendMessage({ action: 'v2:kill' });
+    };
+
     const note = document.createElement('div');
     note.innerText = '자동으로 조사하고 있어요 · 이 창은 건드리지 않아도 돼요';
     note.style.cssText = 'font-size: 11px; color: #c0c5d4; margin-top: 10px;';
@@ -1088,6 +1113,7 @@ function injectModal() {
     card.appendChild(phase);
     card.appendChild(sub);
     card.appendChild(stopBtn);
+    card.appendChild(killBtn);
     card.appendChild(note);
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
@@ -4911,6 +4937,58 @@ async function drainPending(noteText) {
 }
 
 // ------------------------------------------------------------
+// ⛔ 강제 종료 (v5.7, 루크: "누르면 무조건 바로 종료")
+//  [중지]는 읽던 카탈로그를 마무리하고 엑셀까지 저장한 뒤에 멈추지만, 이것은 그 자리에서 끝낸다.
+//   - 작업 창을 바로 닫는다 → 페이지를 기다리던 일은 그 즉시 실패로 끝나 판이 풀린다
+//   - 판 번호(_runGen)를 올린다 → 아직 안 끝난 옛 판의 뒷정리(엑셀 저장·자동 재시작)는 전부 무시된다
+//   - 보던 키워드는 대기줄 맨 앞으로, 못 본 카탈로그는 그대로 남아 다음 [▶ 시작]에 이어간다
+//   - 결과는 바로 저장하고, 엑셀은 뒤에서 한 번 받아 둔다 (안 되면 [💾 엑셀 저장]으로 받으면 된다)
+//   - 12초가 지나도 옛 판이 안 끝나면 확장을 다시 켠다 (무조건 끝내기 위한 마지막 수단. 패널은 다시 열면 된다)
+// ------------------------------------------------------------
+let _runGen = 0;         // 판 번호 — workerLoop 가 시작할 때마다 1 커진다
+let _loopAlive = false;  // 아직 뒷정리까지 안 끝난 판이 있나
+
+// 상태만 정리한다 (크롬 API 없음 → 시험대에서 그대로 돌려본다). 닫을 작업 창 번호를 돌려준다.
+function killState(now) {
+    S.stopRequested = true;      // 옛 판이 어디서 깨어나든 다음 확인에서 바로 빠져나온다
+    S.userStopped = true;        // 다시 켜져도·1분 알람이 와도 저절로 되살리지 않는다
+    S.haltedFor = '';
+    const cur = S.current ? String(S.current.keyword || '') : '';
+    if (cur && !S.queue.some(k => bareKw(k) === bareKw(cur))) S.queue.unshift(cur);   // 보던 키워드는 맨 앞으로
+    S.current = null;
+    S.note = '';
+    S.lastError = '';
+    S.running = false;
+    if (S.sessionStartMs) { S.runActiveMs += (now || Date.now()) - S.sessionStartMs; S.sessionStartMs = 0; }
+    const tab = S.workerTabId;
+    S.workerTabId = null;
+    return tab;
+}
+
+async function forceKill() {
+    const wasRunning = S.running || _loopAlive;
+    _runGen++;                   // 옛 판의 finally 는 번호가 달라진 것을 보고 아무것도 하지 않는다
+    coordStopResumePoller();
+    coordHbStop();
+    const tab = killState(Date.now());
+    if (!wasRunning) S.stopRequested = false;   // 돌던 판이 없으면 남겨 둘 표시도 없다
+    if (tab) { try { await chrome.tabs.remove(tab); } catch (_) {} }
+    try { await persist(); } catch (_) {}
+    broadcast();
+    console.log('[강제종료] 판을 끝냈습니다. 대기줄 ' + S.queue.length + ' · 못 본 카탈로그 ' + S.pending.length);
+    if (wasRunning && S.results.length) {
+        exportAll().catch(e => console.error('[강제종료] 엑셀 저장 실패:', e));   // 뒤에서 한 번 받아 둔다
+    }
+    if (wasRunning) {
+        setTimeout(() => {
+            if (!_loopAlive) return;
+            console.warn('[강제종료] 옛 판이 12초 안에 안 끝나 확장을 다시 켭니다.');
+            try { chrome.runtime.reload(); } catch (_) {}
+        }, 12000);
+    }
+}
+
+// ------------------------------------------------------------
 // 대기줄 작업자
 //  0) 지난번 중지로 못 본 카탈로그부터 마저 본다
 //  1) 그다음 새 키워드들을 처리한다
@@ -4918,7 +4996,9 @@ async function drainPending(noteText) {
 //  3) 다 끝나면 CSV를 저장한다
 // ------------------------------------------------------------
 async function workerLoop() {
-    if (S.running) return;
+    if (S.running || _loopAlive) return;   // 강제 종료한 옛 판이 정리 중이면 새 판을 겹쳐 띄우지 않는다
+    const myGen = ++_runGen;
+    _loopAlive = true;
     S.running = true;
     // 🔁 번갈아: 지금 '등록 차례'면 새 판을 시작하지 않는다(겹침 방지).
     //   내 차례(source)가 되면 폴러가 다시 불러준다. 등록이 5분+ 조용하면 내가 이어간다.
@@ -5002,6 +5082,7 @@ async function workerLoop() {
                 // 엑셀은 매번 누적본이므로 중간마다 저장하지 않는다 (파일이 쌓여 헷갈림).
                 // 전체 완료 또는 중지 시 아래 마무리 단계에서 한 번만 저장된다 (2026-09-06)
             } catch (e) {
+                if (myGen !== _runGen) break;   // 강제 종료로 깨진 것 — 실패로 적지 않는다
                 console.error('[키워드 처리] 실패:', keyword, e);
                 S.done.push({ keyword: keyword, total: 0, hits: 0, error: true });
                 S.current = null;
@@ -5042,6 +5123,8 @@ async function workerLoop() {
             }
         }
 
+        if (myGen !== _runGen) return;   // ⛔ 강제 종료된 판 — 엑셀은 forceKill 이 받는다 (두 번 받지 않기)
+
         // ----- 마무리: 엑셀 파일 1개 저장 ([전체] 시트 + 키워드별 시트) -----
         if (processedAny && S.results.length) {
             try { await exportAll(); } catch (e) {
@@ -5077,6 +5160,14 @@ async function workerLoop() {
         console.error('[작업자] 오류:', e);
         S.lastError = '오류가 발생했습니다: ' + String(e && e.message || e);
     } finally {
+        if (myGen !== _runGen) {               // ⛔ 강제 종료된 판 — 상태는 forceKill 이 이미 정리했다. 건드리지 않는다
+            _loopAlive = false;
+            S.stopRequested = false;
+            console.log('[강제종료] 옛 판 정리 끝');
+            broadcast();
+            return;
+        }
+        _loopAlive = false;
         const wasStopped = S.stopRequested;   // 사용자가 중지한 판은 자동으로 되살리지 않는다
         S.running = false;
         coordHbStop();   // 🔁 판 끝 → 하트비트 중단
@@ -5113,6 +5204,7 @@ async function workerLoop() {
 
 function ensureWorker(force) {
     if (S.running) return;
+    if (!force && S.userStopped) return;   // (v5.7) [중지]·[⛔ 강제 종료]로 멈춘 판 — 1분 알람이 와도 저절로 다시 돌지 않는다
     if (!force && S.haltedFor && Date.now() - _haltAt < HALT_RETRY_MS) return;   // 로그인·회원 멈춤 중 — 5분에 한 번만
     if (S.queue.length > 0 || S.pending.length > 0) workerLoop();
 }

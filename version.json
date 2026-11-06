@@ -1,19 +1,19 @@
 {
- "latest": "5.6",
- "note": "등록용 시트 안내 정정: A~D 네 칸(카탈로그명·주소·수량·판매가)을 긁어 자동등록 표 첫 칸에 붙여넣기",
+ "latest": "5.7",
+ "note": "⛔ 강제 종료 버튼(무조건 바로 멈춤) + [중지] 뒤 1분 알람이 혼자 다시 돌던 것 고침",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "466eb9f43e946c6d5b2951db9d7a571779973c3734e38601ba13d1b0f84eaf78",
+    "sha256": "90383dbe35c8db0b9c21af51831f27f283fc3c3a1ad48508d20f5732ccb136d4",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "b236ea0b925ceaad23cbe73d50e1e24096a58c8a2a8fe44dc30e6766d5c319b5",
-    "size": 292447
+    "sha256": "cf8942c63f11b72e39679de6965638461d0efefa93a7619f8258cff826656df3",
+    "size": 297894
    },
    {
     "path": "config.js",
@@ -22,13 +22,13 @@
    },
    {
     "path": "sidepanel.html",
-    "sha256": "72460c7eb26e8e4b074cf51c4cf2197896e7bdd7ed9e57f2ca640d863ab0bfcb",
-    "size": 21523
+    "sha256": "72b2c43d6f050b46ab898036c59f17ec0c2748e72e3f7c3edfe80aeb4277c3fd",
+    "size": 21825
    },
    {
     "path": "sidepanel.js",
-    "sha256": "bc330979c61d144504d1c303bfa61d2ffa8b1b9e6d7ab90a8d29f1e66a599a9e",
-    "size": 36033
+    "sha256": "1327098265affc153949d8d9f4f51959a84ee03daac6b94a9f19f94422bdc0bd",
+    "size": 36652
    },
    {
     "path": "xlsx.full.min.js",
