@@ -2997,6 +2997,8 @@ function computeMargin(row, money) {
     // 묶음이 없으니 사입할 것이 없다. 계산할 것도 없다.
     if (row.soloOnly) { row.basePrice = ""; return blank("낱개 전용"); }
 
+    // (v5.10) 페이지를 못 열었거나 차단된 것은 "옵션 없음" 이 아니다 — 사유를 그대로 판정 칸에 쓴다 (2회차: 햇반 36개가 '옵션 없음' 으로 보였다)
+    if (clean.length === 0 && /페이지 열기 실패|읽기실패|차단으로 못 봄/.test(String(row.collectStatus || ''))) return blank(String(row.collectStatus));
     if (clean.length === 0) return blank("옵션 없음");
 
     // 가장 싼 묶음을 무조건 고른다. 1개보다 비싸도 칸을 비우지 않는다.
@@ -4942,6 +4944,30 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
     // ----- 키워드 집계 (이어본 만큼 합산) -----
     const tally = updateDoneEntry(keyword, visitedNow, money);
     S.current = null;
+
+    // (v5.10) [키워드 요약] 모은 카탈로그가 각각 어떻게 됐는지 진단 파일에 남긴다.
+    //  리뷰 부족으로 건너뛴 것은 엑셀에 안 남아서, 2회차에 "햇반 23개 중 2개만 보임" 의 이유를 파일로 알 수 없었다.
+    try {
+        const fate = (c) => {
+            if (c.skippedByReview) return '리뷰 부족(2주 ' + (c.reviewRecent === '' || c.reviewRecent === undefined ? '?' : c.reviewRecent) + (c.reviewMore ? '+' : '') + ')';
+            if (c.soloOnly) return '낱개 전용(카드 1개뿐)';
+            if (!visitedNow.includes(c)) return S.stopRequested ? '중지로 못 봄' : '안 봄(대기)';
+            const v = c.verdict || c.collectStatus || '?';
+            const extra = [];
+            if (c.reviewRecent !== '' && c.reviewRecent !== undefined) extra.push('2주 ' + c.reviewRecent + (c.reviewMore ? '+' : ''));
+            if (isFinite(bestProfitOf(c)) && bestProfitOf(c) > -Infinity) extra.push('순이익 ' + bestProfitOf(c));
+            if (c.buyStatus) extra.push(String(c.buyStatus).slice(0, 30));
+            if (c.collectStatus && c.collectStatus !== v) extra.push(c.collectStatus);
+            return v + (extra.length ? ' (' + extra.join(' · ') + ')' : '');
+        };
+        const n = { total: cats.length, review: 0, solo: 0, seen: visitedNow.length };
+        for (const c of cats) { if (c.skippedByReview) n.review++; else if (c.soloOnly) n.solo++; }
+        S.failures.push({
+            cat: { title: '[키워드 요약] "' + keyword + '" 카탈로그 ' + n.total + '개 → 본 것 ' + n.seen + ' · 리뷰 부족 ' + n.review + ' · 낱개 전용 ' + n.solo + ' · 등록가능 ' + tally.hits,
+                   catalogUrl: searchUrlBase + encodeURIComponent(bareKw(keyword)), collectStatus: '참고자료' },
+            debug: { sampleHtml: cats.map((c, k) => (k + 1) + '. ' + String(c.title || '').slice(0, 40) + ' | ' + (c.nvMid || '') + ' | ' + fate(c)).join('\n') }
+        });
+    } catch (e) { console.debug('[키워드 요약] 실패:', e && e.message); }
 
 
     const allDone = !S.queue.length && !S.pending.length && !S.stopRequested;

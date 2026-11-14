@@ -1,19 +1,19 @@
 {
- "latest": "5.9",
- "note": "꼬리물기 '자사' 검색 제외 + 카탈로그 0개 키워드는 검색 페이지 생김새를 진단에 남김(4카테고리 1회차 결과)",
+ "latest": "5.10",
+ "note": "진단에 키워드 요약(카탈로그마다 리뷰 부족·판정·읽기 실패) + 못 연 페이지는 '옵션 없음' 대신 사유 표기(4카테고리 2회차)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "5fefa4d94d8a4db2740abdf5231aef1dab07711cba696d5fab6c6aced8871321",
-    "size": 1174
+    "sha256": "f7c3ad8af24fff503e32b36f1896493551fda26fb83e52bd34133e0d99c13e6e",
+    "size": 1175
    },
    {
     "path": "background.js",
-    "sha256": "b85a12c8840c34f1103ac93394ac60ccf0b63cdf97a66bf2f4e3e930cf8ec49d",
-    "size": 304312
+    "sha256": "c016ae0edea5528c96892ba924d0a4510138ee9234016b1eb7881cec0df24e6e",
+    "size": 306746
    },
    {
     "path": "config.js",
