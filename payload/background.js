@@ -1422,6 +1422,30 @@ function scrollPageToLoadAll() {
 // ------------------------------------------------------------
 // 1단계: 검색 결과 파싱
 // ------------------------------------------------------------
+// [검색 페이지에서 실행] 카탈로그를 0개 모았을 때 페이지 생김새를 담는다 (v5.9)
+//  1회차(11-14) "USB 메모리 32GB"·"햇반 210g"·"마스크팩" 이 카탈로그 0개로 끝났는데 파일엔 아무 흔적이 없었다.
+//  주소(다른 곳으로 넘어갔는지)·제목·카탈로그 링크 수·카드 종류·클래스 지도·본문 앞부분을 남긴다.
+function sampleSearchPage() {
+    const out = { url: location.href, title: document.title, catalogLinks: 0, types: {}, classes: {}, text: '', htmlHead: '' };
+    try {
+        out.catalogLinks = document.querySelectorAll('a[href*="/catalog/"]').length;
+        for (const el of document.querySelectorAll('[data-shp-contents-type]')) {
+            const t = el.getAttribute('data-shp-contents-type');
+            out.types[t] = (out.types[t] || 0) + 1;
+        }
+        const cls = {};
+        for (const el of document.querySelectorAll('li[class], div[class*="product"], div[class*="item"], div[class*="card"], div[class*="list"]')) {
+            const c = String(el.className).split(/\s+/).slice(0, 2).join(' ');
+            if (!c) continue;
+            cls[c] = (cls[c] || 0) + 1;
+        }
+        out.classes = Object.fromEntries(Object.entries(cls).sort((a, b) => b[1] - a[1]).slice(0, 30));
+        out.text = String(document.body && document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1500);
+        out.htmlHead = String(document.documentElement.innerHTML || '').slice(0, 1200);
+    } catch (e) { out.err = String(e && e.message || e); }
+    return out;
+}
+
 function extractDataFromPage() {
     const safeText = (t) => t ? t.replace(/[\t\n\r]+/g, " ").replace(/\s{2,}/g, " ").trim() : "";
 
@@ -3663,6 +3687,9 @@ const SPEC_RE = /^\d+([.,]\d+)?(ml|l|g|mg|kg|cc|%|배|매|cm|mm|정|포|캡슐|�
 const PROMO_WORDS = ['정품', '공식', '본사', '무료배송', '당일발송', '신상', '할인', '인기'];
 // 페이지 버튼 문구 등이 키워드로 섞이는 것 최종 차단 (안전망 2겹)
 const KW_JUNK_RE = /바로가기|사러가기|더보기|전체보기|리뷰|판매처|쿠폰|혜택|찜하기|로그인|배송|공식인증|최저가/;
+// (v5.9) 제조사·브랜드 칸의 자리표시 단어 — 회사 이름이 아니라서 심화 검색어가 되면 엉뚱한 카테고리로 간다
+//  (11-06 루크 결과: 제조사 '자사' 를 검색해 찻주전자·다기세트까지 감)
+const MAKER_PLACEHOLDER_RE = /^(자사|자체|자체\s*제작|자체\s*브랜드|상세\s*설명\s*참조|상세\s*페이지\s*참조|상세\s*참조|해당\s*없음|알\s*수\s*없음|없음|미상|기타|oem|odm|수입사|제조사|브랜드|판매자|국내|해외|중국|한국|korea|china)$/i;
 // 형태·수식 단어: "무엇인지"가 아니라 "어떤 모양·등급인지"라서 메인키워드가 될 수 없다
 // (예: "흑염소진액 스틱 70ml"의 메인은 스틱이 아니라 흑염소진액)
 const NOT_MAIN_WORDS = ['스틱', '분말', '가루', '액상', '파우치', '젤리', '앰플', '타블렛', '골드', '프리미엄', '플러스', '오리지널', '스페셜', '대용량', '본품', '세트', '선물세트', '리필'];
@@ -3746,8 +3773,9 @@ function extractTailKeywords(cat) {
     const deepKws = [];
     const mk = eng2kor(maker);
     const bd = eng2kor(brand);
-    if (mk) deepKws.push(mk);
-    if (bd && bd.toLowerCase() !== mk.toLowerCase()) deepKws.push(bd);   // 둘이 같으면 1개만
+    const realName = (x) => x && !MAKER_PLACEHOLDER_RE.test(x.trim());   // (v5.9) '자사'·'상세설명참조' 같은 자리표시는 검색어가 아니다
+    if (realName(mk)) deepKws.push(mk);
+    if (realName(bd) && bd.toLowerCase() !== mk.toLowerCase()) deepKws.push(bd);   // 둘이 같으면 1개만
 
     // 중복 제거 + 쓰레기 문구 차단
     const seen = new Set();
@@ -4141,6 +4169,21 @@ async function processKeyword(keyword, money) {
         prevCount = rows.length;
 
         if (attempt < 3) await restSleep(rand(1200, 2200));
+    }
+
+    // (v5.9) 카탈로그를 하나도 못 모았으면 검색 페이지 생김새를 진단 파일에 남긴다 — 파일만 보고 "왜 0개인지" 알 수 있게
+    if (rows.length === 0 && !S.stopRequested) {
+        let sp = null;
+        try {
+            const o = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: sampleSearchPage });
+            sp = o && o[0] && o[0].result;
+        } catch (e) { sp = { err: String(e && e.message || e) }; }
+        S.failures.push({
+            cat: { title: '[검색 결과 0개] "' + keyword + '" (카드 ' + ((listInfo && listInfo.cardCount) || 0) + '개)',
+                   catalogUrl: searchUrlBase + encodeURIComponent(bareKw(keyword)), collectStatus: '카탈로그 0개' },
+            debug: { sampleHtml: JSON.stringify(sp, null, 1).slice(0, 7000) }
+        });
+        console.warn('[검색] 카탈로그 0개:', keyword, sp && sp.url, sp && sp.types);
     }
 
     // [자체 점검] 카드에서 걸러졌거나 링크 대조에서 빠진 게 있으면 진단 기록에 남긴다

@@ -1,19 +1,19 @@
 {
- "latest": "5.8",
- "note": "매입처 상품명을 사이트 이름으로 읽어 '제품 불일치 의심'을 잘못 찍던 것 고침(4카테고리 1회차)",
+ "latest": "5.9",
+ "note": "꼬리물기 '자사' 검색 제외 + 카탈로그 0개 키워드는 검색 페이지 생김새를 진단에 남김(4카테고리 1회차 결과)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "dece886e3563d04217701ab5c29ff1da0413dd1ceacf8f731ffc80928373ece7",
+    "sha256": "5fefa4d94d8a4db2740abdf5231aef1dab07711cba696d5fab6c6aced8871321",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "17c59ecf6f21a26b3fb3874828d5e7599dab16d0e59ab640b82b2fc41dc1f5f4",
-    "size": 301066
+    "sha256": "b85a12c8840c34f1103ac93394ac60ccf0b63cdf97a66bf2f4e3e930cf8ec49d",
+    "size": 304312
    },
    {
     "path": "config.js",
