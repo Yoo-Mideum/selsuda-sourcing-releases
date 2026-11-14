@@ -1,19 +1,19 @@
 {
- "latest": "5.7",
- "note": "⛔ 강제 종료 버튼(무조건 바로 멈춤) + [중지] 뒤 1분 알람이 혼자 다시 돌던 것 고침",
+ "latest": "5.8",
+ "note": "매입처 상품명을 사이트 이름으로 읽어 '제품 불일치 의심'을 잘못 찍던 것 고침(4카테고리 1회차)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "90383dbe35c8db0b9c21af51831f27f283fc3c3a1ad48508d20f5732ccb136d4",
+    "sha256": "dece886e3563d04217701ab5c29ff1da0413dd1ceacf8f731ffc80928373ece7",
     "size": 1174
    },
    {
     "path": "background.js",
-    "sha256": "cf8942c63f11b72e39679de6965638461d0efefa93a7619f8258cff826656df3",
-    "size": 297894
+    "sha256": "17c59ecf6f21a26b3fb3874828d5e7599dab16d0e59ab640b82b2fc41dc1f5f4",
+    "size": 301066
    },
    {
     "path": "config.js",

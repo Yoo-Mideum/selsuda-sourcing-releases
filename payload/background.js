@@ -1206,11 +1206,33 @@ function _titleMismatch(catTitle, buyTitle) {
 function checkSellableOnPage() {
     // 매입처 페이지의 실제 상품명도 담아온다.
     // (카탈로그가 "12개"라는데 매입처 상품명이 "1박스"면 매칭오류를 사람 눈으로 바로 확정 가능)
-    let pageTitle = '';
-    try { pageTitle = (document.title || '').replace(/\s+/g, ' ').trim().slice(0, 80); } catch (e) {}
+    // (v5.8) 상품명은 구조화된 자리에서만 믿는다: og:title → h1. document.title 은 사이트 이름("쿠팡!", "G마켓",
+    //  "모바일 쇼핑은 옥션")이나 아직 안 그려진 제목이 자주 와서, 이걸로 "제품 불일치"를 찍으면 멀쩡한 매입처를 버린다.
+    //  → document.title 은 보여주기용으로만 담고(titleSure=false), 불일치 판단은 titleSure 일 때만 한다.
+    let pageTitle = '', titleSure = false;
+    try {
+        const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+        const siteOnly = /^(쿠팡!?|G마켓|옥션|모바일 쇼핑은 옥션|11번가|SSG\.COM|롯데ON|롯데온|위메프|티몬|인터파크|네이버|NAVER)$/i;
+        const og = document.querySelector('meta[property="og:title"], meta[name="og:title"], meta[name="twitter:title"]');
+        const ogT = clean(og && og.getAttribute('content'));
+        if (ogT.length >= 6 && !siteOnly.test(ogT)) { pageTitle = ogT.slice(0, 80); titleSure = true; }
+        if (!titleSure) {
+            const h1 = document.querySelector('h1');
+            const h1T = clean(h1 && h1.innerText);
+            if (h1T.length >= 8 && !siteOnly.test(h1T)) { pageTitle = h1T.slice(0, 80); titleSure = true; }
+        }
+        if (!pageTitle) pageTitle = clean(document.title).slice(0, 80);
+    } catch (e) {}
 
     try {
         let t = ((document.body && document.body.innerText) || '').slice(0, 8000);
+        // (v5.8) 네이버 "잠깐! 네이버쇼핑에서 알려드립니다" 안내 페이지 = 매입처에 아직 못 간 것.
+        //  판매중단·불일치 둘 다 판단하지 않는다. 처음 한 번은 글과 링크를 진단 파일에 담아 다음 회차에 자동 통과를 만든다.
+        if (/잠깐!?\s*네이버\s*쇼핑에서\s*알려드립니다/.test(document.title + ' ' + t.slice(0, 600))) {
+            let links = '';
+            try { links = Array.from(document.querySelectorAll('a,button')).slice(0, 40).map(a => (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30) + '→' + (a.href || a.getAttribute('onclick') || '').slice(0, 120)).filter(x => x.length > 2).join('\n'); } catch (e) {}
+            return { sellable: true, title: '', titleSure: false, notice: true, sample: t.slice(0, 1200) + '\n--- 링크 ---\n' + links };
+        }
         // 오탐 방지: 마케팅/안내 문구를 먼저 제거
         for (const noise of ['품절임박', '품절 임박', '품절 시', '품절시', '품절될', '품절이 예상',
                              '재입고', '품절되면', '품절 상품 제외']) {
@@ -1222,7 +1244,7 @@ function checkSellableOnPage() {
                         '판매가 종료', '판매중단', '판매 중단', '판매중지', '판매 중지',
                         '진행중인 방송이 아닙', '판매 기간이 아닙'];
         for (const w of strong) {
-            if (t.indexOf(w) !== -1) return { sellable: false, hit: w, title: pageTitle };
+            if (t.indexOf(w) !== -1) return { sellable: false, hit: w, title: pageTitle, titleSure: titleSure };
         }
 
         // [약한 신호] 리뷰/공지 등 다른 맥락에서도 나올 수 있는 단어는
@@ -1230,12 +1252,12 @@ function checkSellableOnPage() {
         const top = t.slice(0, 2500);
         const weak = ['품절', '판매종료', '판매 종료', '일시품절'];
         for (const w of weak) {
-            if (top.indexOf(w) !== -1) return { sellable: false, hit: w, title: pageTitle };
+            if (top.indexOf(w) !== -1) return { sellable: false, hit: w, title: pageTitle, titleSure: titleSure };
         }
 
-        return { sellable: true, title: pageTitle };
+        return { sellable: true, title: pageTitle, titleSure: titleSure };
     } catch (e) {
-        return { sellable: true, title: pageTitle };
+        return { sellable: true, title: pageTitle, titleSure: titleSure };
     }
 }
 
@@ -4760,8 +4782,19 @@ async function visitCatalogGroup(keyword, cats, money, resumed) {
                         cat.buyStatus = (r0 && r0.sellable === false)
                             ? '판매중단 의심⚠️(' + (r0.hit || '') + ')' : '';
                         if (r0 && r0.title) cat.buyPageTitle = r0.title;   // 매입처의 실제 상품명
+                        if (r0 && r0.notice) {   // (v5.8) 네이버 "잠깐!" 안내 페이지 — 매입처에 못 간 것. 틀린 표시를 하지 않는다
+                            cat.buyStatus = '';
+                            if (!S.noticeSampleDone) {
+                                S.noticeSampleDone = true;
+                                S.failures.push({
+                                    cat: { title: '[안내 페이지 샘플] ' + cat.title, catalogUrl: cat.buyLinkHref || cat.catalogUrl, collectStatus: '참고자료' },
+                                    debug: { sampleHtml: '잠깐! 네이버쇼핑 안내 페이지에 걸렸습니다. 글과 링크:\n' + (r0.sample || '') }
+                                });
+                            }
+                        }
                         // 🚨 제품 불일치: 매입처 실제 상품이 카탈로그 제품과 완전히 다르면 = 잘못 매칭 → 등록 제외
-                        if (!cat.buyStatus && cat.buyPageTitle && _titleMismatch(cat.title, cat.buyPageTitle)) {
+                        //  (v5.8) 상품명을 og:title/h1 에서 확실히 읽었을 때만 판단한다. document.title 로는 판단하지 않는다.
+                        if (!cat.buyStatus && r0 && r0.titleSure && cat.buyPageTitle && _titleMismatch(cat.title, cat.buyPageTitle)) {
                             cat.buyStatus = '제품 불일치 의심⚠️(매입: ' + String(cat.buyPageTitle).replace(/\s+/g, ' ').trim().slice(0, 24) + ')';
                             cat.buyMismatch = true;
                             console.warn('[매입처 확인] 제품 불일치:', cat.title, '≠', cat.buyPageTitle);
