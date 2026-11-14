@@ -1425,6 +1425,14 @@ function scrollPageToLoadAll() {
 // [검색 페이지에서 실행] 카탈로그를 0개 모았을 때 페이지 생김새를 담는다 (v5.9)
 //  1회차(11-14) "USB 메모리 32GB"·"햇반 210g"·"마스크팩" 이 카탈로그 0개로 끝났는데 파일엔 아무 흔적이 없었다.
 //  주소(다른 곳으로 넘어갔는지)·제목·카탈로그 링크 수·카드 종류·클래스 지도·본문 앞부분을 남긴다.
+// [검색 페이지에서 실행] "검색결과가 없습니다" 같은 글이 있으면 true — 더 기다릴 이유가 없다 (v5.11)
+function searchPageSaysNoResults() {
+    try {
+        const t = String(document.body && document.body.innerText || '').slice(0, 4000);
+        return /검색결과가 없습니다|검색 결과가 없습니다|에 대한 검색결과가 없|다른 검색어를 입력|검색어를 확인해/.test(t);
+    } catch (e) { return false; }
+}
+
 function sampleSearchPage() {
     const out = { url: location.href, title: document.title, catalogLinks: 0, types: {}, classes: {}, text: '', htmlHead: '' };
     try {
@@ -4149,10 +4157,13 @@ async function processKeyword(keyword, money) {
     });
 
     // 개수가 더 늘지 않으면 그게 이 페이지의 전부다 - 헛돌지 않고 바로 넘어간다.
+    //  (v5.11) 0개면 페이지가 아직 안 그려진 것일 수 있다 — 같은 키워드(햇반 210g)가 한 판엔 0개, 다음 판엔 23개로 나왔다.
+    //   0개일 땐 더 길게(2.5~4초) 최대 6번까지 기다리고, 페이지가 "검색결과 없음" 이라고 말하면 바로 그만둔다.
     let rows = [];
     let listInfo = null;
     let prevCount = -1;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    const MAX_TRIES = 6;
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
         if (S.stopRequested) break;
         try {
             await chrome.scripting.executeScript({ target: { tabId: tabId }, func: scrollPageToLoadAll });
@@ -4170,8 +4181,14 @@ async function processKeyword(keyword, money) {
         if (rows.length > 0 && rows.length === prevCount) break; // 더 안 늘어난다 = 이게 전부
         prevCount = rows.length;
 
-        if (attempt < 3) await restSleep(rand(1200, 2200));
+        if (rows.length === 0 && attempt >= 2) {               // (v5.11) 정말 결과가 없는 페이지면 더 기다리지 않는다
+            let none = false;
+            try { const o = await chrome.scripting.executeScript({ target: { tabId: tabId }, func: searchPageSaysNoResults }); none = !!(o && o[0] && o[0].result); } catch (_) {}
+            if (none) { console.log('[검색] 결과 없음 페이지:', keyword); break; }
+        }
+        if (attempt < MAX_TRIES) await restSleep(rows.length === 0 ? rand(2500, 4000) : rand(1200, 2200));
     }
+    if (rows.length > 0) console.log('[검색] ' + keyword + ': 카탈로그 ' + rows.length + '개');
 
     // (v5.9) 카탈로그를 하나도 못 모았으면 검색 페이지 생김새를 진단 파일에 남긴다 — 파일만 보고 "왜 0개인지" 알 수 있게
     if (rows.length === 0 && !S.stopRequested) {
