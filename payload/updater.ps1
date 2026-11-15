@@ -53,6 +53,63 @@ function Say($t) {
     try { Add-Content -LiteralPath $log -Value $line -Encoding utf8 } catch {}
 }
 
+# ── 창 없이 (v5.12) ─────────────────────────────────────────
+#   예약 작업이 powershell.exe 를 직접 부르면 -WindowStyle Hidden 을 줘도 콘솔 창이 잠깐 보인다 (1시간마다 검은 창).
+#   wscript.exe 로 작은 .vbs 를 돌리고, 그 .vbs 가 PowerShell 을 창 0 으로 부르면 아무것도 안 보인다.
+#   옛 설치본(powershell 직접)의 예약 작업·시작프로그램 바로가기를 여기서 바꿔 본다.
+#   ★예약 작업은 설치기가 관리자 권한으로 만들어서, 일반 권한인 여기서는 "Access is denied" 가 날 수 있다.
+#     그땐 조용히 넘어간다 — 새 설치기로 다시 깔면 바뀐다. 시작프로그램 바로가기는 사용자 것이라 늘 바뀐다.
+#   .vbs 안에는 한글을 쓰지 않는다 (wscript 는 ANSI 로 읽어 한글 경로가 깨진다) — 옆의 .ps1 을 스스로 찾는다.
+function QuietLauncher {
+    try {
+        $ws = Join-Path $env:WINDIR 'System32\wscript.exe'
+        if (-not (Test-Path -LiteralPath $ws)) { return }
+        $vbs = Join-Path $root '업데이트기_조용히.vbs'
+        if (-not (Test-Path -LiteralPath $vbs)) {
+            $lines = @(
+                "' Selsuda sourcing - runs the updater (.ps1 next to this file) with no window.",
+                "' The scheduled task calls this via wscript.exe instead of powershell.exe,",
+                "' because powershell.exe flashes a console window even with -WindowStyle Hidden.",
+                'Option Explicit',
+                'Dim fso, sh, dir, f, ps1',
+                'Set fso = CreateObject("Scripting.FileSystemObject")',
+                'Set sh  = CreateObject("WScript.Shell")',
+                'dir = fso.GetParentFolderName(WScript.ScriptFullName)',
+                'ps1 = ""',
+                'For Each f In fso.GetFolder(dir).Files',
+                '    If LCase(fso.GetExtensionName(f.Name)) = "ps1" Then ps1 = f.Path',
+                'Next',
+                'If ps1 = "" Then WScript.Quit 1',
+                'sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1 & """", 0, True',
+                'WScript.Quit 0'
+            )
+            Set-Content -LiteralPath $vbs -Value ($lines -join "`r`n") -Encoding Ascii
+        }
+        $arg = '//B //Nologo "' + $vbs + '"'
+        # 예약 작업 (관리자 권한으로 만들어진 것이면 여기서 Access denied → 조용히)
+        try {
+            $t = Get-ScheduledTask -TaskName '셀수다자동소싱_업데이트' -ErrorAction Stop
+            if (@($t.Actions | Where-Object { [string]$_.Execute -match 'powershell' }).Count -gt 0) {
+                $a = New-ScheduledTaskAction -Execute $ws -Argument $arg
+                Set-ScheduledTask -TaskName '셀수다자동소싱_업데이트' -Action $a -ErrorAction Stop | Out-Null
+                Say '예약 작업을 창 없는 방식(wscript)으로 바꿨습니다'
+            }
+        } catch { }
+        # 시작프로그램 바로가기 (예약 작업을 못 쓴 컴퓨터의 대안 등록)
+        try {
+            $sh = New-Object -ComObject WScript.Shell
+            $lnk = Join-Path $sh.SpecialFolders('Startup') '셀수다자동소싱_업데이트.lnk'
+            if (Test-Path -LiteralPath $lnk) {
+                $l = $sh.CreateShortcut($lnk)
+                if ([string]$l.TargetPath -match 'powershell') {
+                    $l.TargetPath = $ws; $l.Arguments = $arg; $l.WindowStyle = 7; $l.Save()
+                    Say '시작프로그램 바로가기를 창 없는 방식(wscript)으로 바꿨습니다'
+                }
+            }
+        } catch { }
+    } catch { }
+}
+
 # 기록이 끝없이 커지지 않게 — 400줄만 남긴다
 function TrimLog {
     try {
@@ -84,6 +141,9 @@ try {
             exit $LASTEXITCODE
         }
     }
+
+    # ── 0-b. 옛 설치본이면 예약 작업을 창 없는 방식으로 (v5.12) ─
+    if (-not $RootWasGiven) { QuietLauncher }
 
     # ── 1. 지금 깔려 있는 버전 ─────────────────────────────────
     $mfPath = Join-Path $ext 'manifest.json'

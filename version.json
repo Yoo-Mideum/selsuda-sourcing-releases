@@ -1,13 +1,13 @@
 {
- "latest": "5.11",
- "note": "검색 목록이 0개면 더 기다렸다 다시 모음(판마다 0개↔23개 달라지던 것, 4카테고리 2회차)",
+ "latest": "5.12",
+ "note": "1시간마다 잠깐 뜨던 검은 창 없이 업데이트 (예약 작업을 wscript 로)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "69d025902f0911b865ca1078f5d2106d0a96044dc9614d14b8b80c0fc32fe92a",
+    "sha256": "1579557929963afc02d30198579bc7306901bddf66b8d3a8b93d255c25854660",
     "size": 1175
    },
    {
@@ -52,8 +52,8 @@
    },
    {
     "path": "updater.ps1",
-    "sha256": "523ec84349a507ec15a0551e515a0dacf1e00bb3b7074d935b0554c64a8b027b",
-    "size": 11532
+    "sha256": "bda9895774d5af4178b931bcc3fa2c504b76586b62fa5c268edb9809e37cecc9",
+    "size": 15418
    }
   ]
  }
