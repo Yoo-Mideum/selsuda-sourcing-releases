@@ -3311,7 +3311,8 @@ function buildSheetAoa(data) {
     const aoa = [headers];
     for (const r of data) {
         aoa.push([
-            (r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '',
+            r.alreadyReg ? regDoneText(r, (r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '')
+                         : ((r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || ''),
             r.confidence || '',
             numOr(r.sellQty !== undefined ? r.sellQty : 1),
             numOr(r.sellProfit !== undefined ? r.sellProfit : r.profit),
@@ -3374,7 +3375,7 @@ const REG_NOTES = {
     3: '올릴 판매가.\n파랑(남이 있는 칸) = 남의 값 − 10원.\n녹색(빈 칸) = 목표 순이익이 그대로 남는 값. 목표 순이익 = 개당원가 × 수량 × 15%(설정), 최소 1,000원 · 최대 10,000원.\n더 큰 묶음보다 비싸지는 칸은 뺐습니다.',
     4: '1건 팔았을 때 남는 돈 = 판매가 − 수수료 − 개당원가×수량 − 택배비.',
     5: '마진 ÷ (개당원가 × 수량). 원가 대비 몇 % 남는지.',
-    6: '파랑 = 등록가능(남이 있는 칸). 녹색 = 신규(아무도 없는 칸). 노랑 = 확인 필요. 빨강 = PASS·역마진.',
+    6: '파랑 = 등록가능(남이 있는 칸). 녹색 = 신규(아무도 없는 칸). 노랑 = 확인 필요. 빨강 = PASS·역마진. 회색 = 이미 올린 것.\n자동등록 프로그램이 켜져 있으면, 이미 올린 칸은 맨 아래 「이미 올린 것」 으로 빠집니다.',
     7: '그 칸의 가격을 어떻게 정했는지.',
     8: '매입처에서 한 번에 사는 묶음 수량.',
     9: '그 묶음 값(배송비 포함).',
@@ -3385,8 +3386,14 @@ const REG_NOTES = {
 };
 const REG_DIVIDERS = {
     check: '▼ 확인하고 올릴 것 (신뢰도 확인필요 · 판매중단 의심 · 조금 남음)',
-    pass:  '▼ 올리지 않음 (PASS · 역마진 · 옵션 없음)'
+    pass:  '▼ 올리지 않음 (PASS · 역마진 · 옵션 없음)',
+    done:  '▼ 이미 올린 것 (자동등록에 등록 기록이 있는 칸 — 다시 붙여넣지 마세요)'
 };
+// 이미 올린 칸의 판정 글 — 언제 올렸는지 붙인다 (v5.13)
+function regDoneText(r, v) {
+    const d = String((r.alreadyReg && r.alreadyReg.date) || '').slice(0, 10);
+    return '이미 등록' + (d ? '(' + d + ')' : '') + (v ? ' · ' + v : '');
+}
 
 // 이 행의 칸 근거 — 남이 있는 칸(경쟁)인지 아무도 없는 칸(빈칸)인지
 function regBasisOf(r) {
@@ -3417,7 +3424,8 @@ function buildRegSheetAoa(rows, rankOf) {
         numOr(r.sellPrice !== undefined ? r.sellPrice : r.basePrice),
         numOr(r.sellProfit !== undefined ? r.sellProfit : r.profit),
         numOr(r.sellCostRate !== undefined ? r.sellCostRate : r.costRate),
-        (r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '',
+        r.alreadyReg ? regDoneText(r, (r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '')
+                     : ((r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || ''),
         basisText(r),
         numOr(r.bestQty), numOr(r.bestTotal), numOr(r.unitCost),
         r.buySeller || '', r.buyUrl || '', r.buyStatus || '',
@@ -3427,10 +3435,11 @@ function buildRegSheetAoa(rows, rankOf) {
         r.searchKeyword || '',
         r.scrapedAt || ''
     ];
-    const sec = { go: [], check: [], pass: [] };
+    const sec = { go: [], check: [], pass: [], done: [] };
     for (const r of rows) {
         const k = rankOf(r);
-        if (k === 0 || k === 3) sec.go.push(r);
+        if (r.alreadyReg || k === 8) sec.done.push(r);
+        else if (k === 0 || k === 3) sec.go.push(r);
         else if (k <= 5) sec.check.push(r);
         else sec.pass.push(r);
     }
@@ -3445,7 +3454,11 @@ function buildRegSheetAoa(rows, rankOf) {
         blank(); aoa.push([REG_DIVIDERS.pass]); kinds.push('div');
         for (const r of sec.pass) { aoa.push(line(r)); kinds.push('pass'); }
     }
-    return { aoa: aoa, kinds: kinds, counts: { go: sec.go.length, check: sec.check.length, pass: sec.pass.length } };
+    if (sec.done.length) {
+        blank(); aoa.push([REG_DIVIDERS.done]); kinds.push('div');
+        for (const r of sec.done) { aoa.push(line(r)); kinds.push('done'); }
+    }
+    return { aoa: aoa, kinds: kinds, counts: { go: sec.go.length, check: sec.check.length, pass: sec.pass.length, done: sec.done.length } };
 }
 
 function makeSheet(data) {
@@ -3502,7 +3515,7 @@ function makeRegSheet(rows, rankOf) {
     ];
     const FILL = {
         head: 'E2EFDA', copy: 'BDD7EE',          // 제목 줄 / 복사하는 네 칸(A~D)의 제목
-        ok: 'DDEBF7', new: 'C6EFCE', check: 'FFF2CC', pass: 'FFC7CE', div: 'D9D9D9'
+        ok: 'DDEBF7', new: 'C6EFCE', check: 'FFF2CC', pass: 'FFC7CE', div: 'D9D9D9', done: 'EDEDED'
     };
     const nCols = REG_HEADERS.length;
     const style = (fill, extra) => Object.assign({ fill: { patternType: 'solid', fgColor: { rgb: fill } } }, extra || {});
@@ -3880,6 +3893,98 @@ async function harvestTailKeywords(cat, money) {
 // ------------------------------------------------------------
 // 전체 결과 내보내기 (지금까지 모은 전체)
 // ------------------------------------------------------------
+// ── [이미 올린 상품 빼기] (v5.13) ───────────────────────────────
+//  수강생 문의(11-24): 완료 키워드를 지우고 다시 돌리면, 이미 스토어에 올린 상품이 또 「바로 올릴 것」 에 나온다.
+//  소싱은 스토어에 뭐가 올라갔는지 모른다. 그걸 아는 건 같은 PC 의 자동등록 백엔드다.
+//  자동등록이 붙여넣은 줄을 거를 때 쓰는 바로 그 통로(/registered?catalogId=번호&qty=수량)에 똑같이 묻는다.
+//   · 키 = 「카탈로그 주소의 번호 # 수량」 — 등록용 시트 B·C 칸과 같은 값이라 자동등록의 판단과 정확히 같다.
+//   · 자동등록이 꺼져 있거나 없는 PC 면 아무것도 바꾸지 않는다(예전과 같음).
+//   · 자동등록은 "기록이 있어도 네이버에 정말 있는지" 까지 확인한 뒤 '등록됨' 이라고 답한다.
+//   ★함정(11-24 루크 PC 실측): 그 PC 의 네이버 API 가 안 되면(허용 IP 아님 → 토큰 403) 자동등록 b191 은
+//     "상품 없음" 으로 잘못 보고 등록 기록을 지운다. 그래서 자동등록이 스토어 이름을 받아 올 때(= API 가 될 때)만 묻는다.
+const REG_CHECK = { port: 0, portAt: 0, why: '', cache: new Map() };
+const REG_PORTS = [];
+for (let p = 8732; p < 8760; p++) REG_PORTS.push(p);
+
+function regKeyOf(url, qty) {
+    const cid = (String(url || '').match(/catalog\/(\d+)/) || [])[1] || '';
+    if (!cid) return '';
+    const q = parseInt(qty, 10);
+    return cid + '#' + (q >= 1 ? q : 1);
+}
+function regKeyOfRow(r) {
+    return regKeyOf(r.sellCatalogUrl !== undefined ? r.sellCatalogUrl : r.catalogUrl,
+                    r.sellQty !== undefined ? r.sellQty : 1);
+}
+
+async function regFetchJson(url, ms) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), ms);
+    try {
+        const res = await fetch(url, { signal: ac.signal, cache: 'no-store' });
+        return await res.json();
+    } finally { clearTimeout(t); }
+}
+
+// 자동등록 백엔드의 포트 (8732 가 막혀 있으면 8733… 로 옮겨 열린다).
+//  못 찾거나, 찾았어도 네이버 API 가 안 되는 상태면 0 (REG_CHECK.why 에 이유). 결과는 10분 기억한다.
+async function findAutoregPort() {
+    if (REG_CHECK.portAt && Date.now() - REG_CHECK.portAt < 10 * 60 * 1000) return REG_CHECK.port;
+    REG_CHECK.port = 0; REG_CHECK.why = '자동등록이 꺼져 있음'; REG_CHECK.portAt = Date.now();
+    for (const p of REG_PORTS) {
+        let j = null;
+        try { j = await regFetchJson('http://127.0.0.1:' + p + '/whoami', 800); } catch (_) { continue; }   // 닫힌 포트
+        if (!j || j.app !== 'selsuda-autoreg') continue;                                                 // 다른 프로그램
+        try {
+            const si = await regFetchJson('http://127.0.0.1:' + p + '/shop_info', 15000);
+            if (si && si.ok && String(si.store || '').trim()) { REG_CHECK.port = p; REG_CHECK.why = ''; return p; }
+        } catch (_) {}
+        REG_CHECK.why = '자동등록의 네이버 연결이 안 됨';
+        return 0;
+    }
+    return 0;
+}
+
+//  rows 중 wanted(r) 인 행만 묻는다(올릴 후보만 — PASS 는 물을 필요가 없다).
+//  등록 기록이 있으면 r.alreadyReg = {no, name, date}. 돌려주는 값: { backend, asked, hits }
+async function markAlreadyRegistered(rows, wanted) {
+    const out = { backend: false, asked: 0, hits: 0 };
+    for (const r of rows) delete r.alreadyReg;
+    const port = await findAutoregPort();
+    out.why = REG_CHECK.why;
+    if (!port) return out;
+    out.backend = true;
+    const keys = [...new Set(rows.filter(wanted).map(regKeyOfRow).filter(Boolean))];
+    const now = Date.now();
+    //  '등록됨' 답은 30분, '안 됨' 답은 3분 기억한다 (그 사이 자동등록으로 올릴 수 있으니 짧게)
+    const todo = keys.filter(k => {
+        const c = REG_CHECK.cache.get(k);
+        return !(c && now - c.at < (c.hit ? 30 : 3) * 60 * 1000);
+    });
+    let i = 0;
+    const worker = async () => {
+        while (i < todo.length) {
+            const k = todo[i++];
+            const cut = k.indexOf('#');
+            try {
+                const j = await regFetchJson('http://127.0.0.1:' + port + '/registered?catalogId=' + k.slice(0, cut)
+                                             + '&qty=' + k.slice(cut + 1), 8000);
+                if (j && j.ok !== false) {
+                    REG_CHECK.cache.set(k, { at: Date.now(), hit: !!j.registered, info: j.info || null });
+                    out.asked++;
+                }
+            } catch (_) { /* 한 칸 실패는 '모름' — 빼지 않는다 */ }
+        }
+    };
+    await Promise.all([1, 2, 3, 4].map(worker));
+    for (const r of rows) {
+        if (!wanted(r)) continue;
+        const c = REG_CHECK.cache.get(regKeyOfRow(r));
+        if (c && c.hit) { r.alreadyReg = c.info || {}; out.hits++; }
+    }
+    return out;
+}
+
 async function exportAll() {
     if (!S.results.length) return;
     const money = await loadMoney();
@@ -3901,6 +4006,7 @@ async function exportAll() {
         return bs.indexOf('판매중단') >= 0 || bs.indexOf('불일치') >= 0 || bs.indexOf('공식몰 아님') >= 0;
     };
     const rankOf = (r) => {
+        if (r.alreadyReg) return 8;              // (v5.13) 자동등록에 이미 올린 칸 — 맨 아래, 등록대기·작업지시서에서 뺀다
         const v = String((r.sellVerdict !== undefined ? r.sellVerdict : r.verdict) || '');
         const sure = String(r.confidence || '').indexOf('높음') === 0;
         if (v.indexOf('등록가능') === 0) {
@@ -3918,6 +4024,13 @@ async function exportAll() {
 
     // 상품마다 판매행으로 펼친다 (1개 기준 행 + 가능하면 메인수량 기준 행)
     const expanded = expandSellRows(S.results, money.targetProfit);
+
+    // (v5.13) 올릴 후보(순위 0~5) 중 자동등록에 이미 올린 칸을 표시한다 — 실패해도 내보내기는 그대로
+    try {
+        S.regCheck = await markAlreadyRegistered(expanded, (r) => rankOf(r) <= 5);
+        S.regCheck.at = Date.now();
+        if (S.regCheck.hits) console.log('[이미 올린 것] ' + S.regCheck.hits + '칸을 맨 아래로 뺐습니다');
+    } catch (e) { console.debug('[이미 올린 것] 확인 건너뜀:', e && e.message); }
 
     const sorted = expanded.slice().sort((a, b) => {
         const ra = rankOf(a), rb = rankOf(b);
@@ -4019,7 +4132,8 @@ async function exportAll() {
     //  가격·제목·수량은 여기서 끝나므로 자동등록은 AI 를 칸마다 쓰지 않고 그룹당 한 번(상세·사진)만 쓴다.
     //  규격(WORKORDER_SPEC)이 바뀌면 자동등록이 "어디까지 아는지" 로 선을 긋는다.
     try {
-        const wo = buildWorkOrder(S.results, money, risky);
+        const regKeys = new Set(expanded.filter(r => r.alreadyReg).map(regKeyOfRow));
+        const wo = buildWorkOrder(S.results, money, risky, regKeys);
         if (wo.상품.length) {
             await chrome.downloads.download({
                 url: 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(wo, null, 1)),
@@ -4032,7 +4146,10 @@ async function exportAll() {
 
 // 작업지시서 본문. 엑셀·CSV 와 같은 숫자에서 나온다 (따로 계산하지 않는다).
 //  risky(r) = 매입 자체가 위험한 것(판매중단·불일치·공식몰 아님) — 빼는 규칙은 등록대기와 같다.
-function buildWorkOrder(results, money, risky) {
+function buildWorkOrder(results, money, risky, regKeys) {
+    //  (v5.13) regKeys = 자동등록에 이미 올린 「카탈로그번호#수량」 — 그 칸은 지시서에 넣지 않는다
+    const notDone = (slots) => (regKeys && regKeys.size)
+        ? slots.filter(s => !regKeys.has(regKeyOf(s.주소, s.수량))) : slots;
     const MIN = CONFIG.SLOT_PROFIT_MIN;
     let ver = '';
     try { ver = chrome.runtime.getManifest().version; } catch (_) {}
@@ -4073,21 +4190,22 @@ function buildWorkOrder(results, money, risky) {
                              판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '',
                              주소: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || '') });
             }
-            if (slots.length) items.push(mk(r, {
+            const slotsLeft = notDone(slots);
+            if (slotsLeft.length) items.push(mk(r, {
                 경로: '묶음', 매입처: r.buySeller || '', 옵션URL: r.buyUrl || '',
                 수량: r.bestQty, 총액: r.bestTotal, 개당원가: r.unitCost, 상태: r.buyStatus || ''
-            }, slots));
+            }, slotsLeft));
         }
 
         // ── 낱개 사입(순방향): 네이버 1개 최저가를 실제 매입가로 사서 칸에 판다 (규격 1.1) ──
         const f = r.fwdSlots || [];
         if (f.length && !r.notOfficial && !r.fwdStatus) {
-            const slots2 = f.map(s => ({
+            const slots2 = notDone(f.map(s => ({
                 수량: s.qty, 제목: s.qty === 1 ? oneTitleOf(r) : qtyTitleOf(r.title, s.qty),
                 판매가: s.price, 순이익: s.profit, 근거: s.basis, 경쟁가: s.ref || '',
                 주소: s.basis === '경쟁' ? qtyUrlOf(r, s.qty) : (r.catalogUrl || '')
-            }));
-            items.push(mk(r, {
+            })));
+            if (slots2.length) items.push(mk(r, {
                 경로: '낱개', 매입처: r.fwdSeller || '', 옵션URL: r.fwdLink || r.soloBuyLink || '',
                 수량: 1, 총액: r.fwdUnitCost, 개당원가: r.fwdUnitCost,
                 최대할인가: r.fwdPay, 배송비: Number(r.fwdShip) || 0, 적립합계: r.fwdPoints, 적립: r.fwdPointDetail || {},

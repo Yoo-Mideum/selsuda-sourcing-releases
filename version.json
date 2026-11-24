@@ -1,19 +1,19 @@
 {
- "latest": "5.12",
- "note": "1시간마다 잠깐 뜨던 검은 창 없이 업데이트 (예약 작업을 wscript 로)",
+ "latest": "5.13",
+ "note": "이미 올린 상품은 엑셀 맨 아래로 (자동등록에 물어봄)",
  "url": "https://github.com/Yoo-Mideum/selsuda-sourcing-releases/releases/latest",
  "patch": {
   "base": "https://raw.githubusercontent.com/Yoo-Mideum/selsuda-sourcing-releases/main/payload/",
   "files": [
    {
     "path": "manifest.json",
-    "sha256": "1579557929963afc02d30198579bc7306901bddf66b8d3a8b93d255c25854660",
+    "sha256": "15a22df0f725050e21b0739699e0560b2c5f4dc7fd2444471b67ac3233cc3f11",
     "size": 1175
    },
    {
     "path": "background.js",
-    "sha256": "3d44fb5d97d112454788ba90452d4a25bd4399a1d831739e02dd254079e347e1",
-    "size": 308169
+    "sha256": "758331568a06724ba790c7c9818361f03bc98984dc2a5ec07ae373bd33b7d4c4",
+    "size": 315327
    },
    {
     "path": "config.js",
